@@ -84,6 +84,18 @@
      a second row on narrower screens: the act of turning fins on moved every
      other control out from under the pointer. -->
 <aside id="fin-opts" hidden>
+  <!-- Material: PETG welds to a support far harder than the PLA the bite numbers
+       were tuned for, so it needs more clearance everywhere. PLA is the default and
+       keeps today's tight grip; PETG widens the support gap + fin-tine standoff,
+       halves the tine bite, thins the bed pad, and turns the pad's tack into a gap.
+       Applied in app.js (applyMaterial), which also re-syncs the tunables below. -->
+  <label class="fld" id="material-fld" title="The filament you'll print in. PETG fuses to supports much harder than PLA, so PETG loosens the gaps, shrinks the tine bite, and gives the bed pad a gap instead of a bite. PLA keeps the tighter grip.">
+    Material
+    <select id="material">
+      <option value="pla">PLA</option>
+      <option value="petg">PETG</option>
+    </select>
+  </label>
   <label class="fld">
     Placement
     <select id="fin-mode" title="Who places the support.">
@@ -135,9 +147,9 @@
     Support gap <span class="mut">mm</span>
     <input type="number" id="gap" min="0.1" max="0.4" step="0.05" value="0.2">
   </label>
-  <label class="fld" id="padgrip-fld" title="How far the bed pad bites into a tilted part to hold it on the plate. Bigger = holds harder; too big = harder to snap off. Default 0.05mm.">
+  <label class="fld" id="padgrip-fld" title="How the bed pad meets a tilted part. Positive = bites in to hold harder; 0 = flush; negative = a gap that snaps off cleaner (the PETG default, since PETG welds hard). Default 0.05mm on PLA.">
     Pad grip <span class="mut">mm</span>
-    <input type="number" id="pad-grip" min="0" max="0.3" step="0.05" value="0.05">
+    <input type="number" id="pad-grip" min="-0.2" max="0.3" step="0.05" value="0.05">
   </label>
   <!-- Wide-face row density: an overhang face too wide for one corner brace gets a
        ROW of fins (a wide tilted plate would otherwise sag between two braces).

@@ -56,3 +56,34 @@ Deno.test('pad: watertight, and flagged as the oval mesh', () => {
   assert(isClosed(CUBE.padTriangles), 'pad geometry is not closed');
   assert(CUBE.pad && CUBE.pad.oval === true, 'pad is not the oval mesh (pad.oval !== true)');
 });
+
+// PETG welds to a support far harder than PLA, so the PETG material profile makes
+// the pad THINNER (padH 0.5->0.3) and turns the tack into a GAP (grab +0.05->-0.1):
+// the pad stands below the part and snaps off instead of fusing. This pins that a
+// negative grab still yields a valid, watertight, thinner-and-lower pad -- so the
+// floor in `conform` (which keeps every column positive) can't be dropped and the
+// gap path can't silently revert to a bite.
+Deno.test('pad: a negative grab (PETG) gives a thinner GAP pad, still watertight', () => {
+  const topo = loadModel('cube');
+  const res = analyze(topo, 45, rotX(45));
+  const build = () => fins.buildFins(topo, res, rotX(45), { mode: 'auto', bedPad: true, tines: true });
+
+  // Highest point of the pad = its outboard rim (open-bed columns rise to padH).
+  // The flat bottom sits at z=0, so isClosed carries the "every column positive"
+  // guarantee; the rim height is what thins with padH and drops with a gap grab.
+  const maxTop = (b) => { let m = -Infinity; for (const v of b.padTriangles) if (v[2] > m) m = v[2]; return m; };
+
+  const g0 = fins.PAD.grab, h0 = fins.FIN.padH;
+  try {
+    const pla = build();                    // today's PLA defaults (grab +0.05, padH 0.5)
+    fins.PAD.grab = -0.10; fins.FIN.padH = 0.30;   // the PETG profile
+    const petg = build();
+
+    assert(isClosed(petg.padTriangles), 'PETG (gap) pad is not watertight');
+    assert(maxTop(petg) <= 0.30 + 1e-6, `PETG pad is not thinner (rim ${maxTop(petg).toFixed(3)} > padH 0.30)`);
+    assert(maxTop(petg) < maxTop(pla) - 1e-6,
+      `PETG pad rim (${maxTop(petg).toFixed(3)}) is not below the PLA pad rim (${maxTop(pla).toFixed(3)}) -- the thinner gap pad didn't take`);
+  } finally {
+    fins.PAD.grab = g0; fins.FIN.padH = h0;   // leave defaults untouched for later tests
+  }
+});

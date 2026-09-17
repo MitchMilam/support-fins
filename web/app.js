@@ -12,7 +12,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { buildTopology, analyze, DEFAULT_THRESHOLD } from './overhangs.js';
 import { suggestOrientations, suggestStrengthPose, loadAlignment, layerVerdict } from './orient.js';
-import { buildFins, PAD } from './fins.js';
+import { buildFins, FIN, PAD } from './fins.js';
 import { PROP } from './prop.js';
 import { findWallPatches } from './planes.js';
 import { drawnWall } from './draw.js';
@@ -1201,9 +1201,8 @@ function markFinsStale() {
   el('s-fins').textContent = 'generating supports…';
 }
 
-// PLA, the common default. Grams are labelled with the material so the number
-// is honest rather than pretending to be machine truth.
-const PLA_DENSITY_G_CM3 = 1.24;
+// Grams use the selected material's density (materialDensity, set by applyMaterial),
+// so the number is honest rather than pretending to be machine truth.
 
 /** Signed volume of a closed triangle-soup, mm^3. Fins and pad are closed solids. */
 function meshVolumeMM3(tris) {
@@ -1234,7 +1233,7 @@ function updateReceipt() {
   const box = el('receipt');
   const added = activeAdded();
   if (!finsVisible || !added.length) { box.hidden = true; return; }
-  const grams = meshVolumeMM3(added) * PLA_DENSITY_G_CM3 / 1000;
+  const grams = meshVolumeMM3(added) * materialDensity / 1000;
   el('r-grams').textContent = `${fmtGrams(grams)} g`;
   box.hidden = false;
 }
@@ -1495,7 +1494,43 @@ function wireGap(id, obj, key, lo, hi) {
   });
 }
 wireGap('gap', PROP, 'gap', 0.1, 0.4);
-wireGap('pad-grip', PAD, 'grab', 0, 0.3);
+wireGap('pad-grip', PAD, 'grab', -0.2, 0.3);
+
+// Material profiles. PETG welds to a support far harder than the PLA every bite
+// number here was tuned on, so PETG needs more clearance in all four places at
+// once: the fin's tine standoff (FIN.gap) and how far each tine sinks into the
+// part (FIN.tineBite), the plain breakaway prop's clearance (PROP.gap), and the
+// bed pad -- thinner (FIN.padH) with a gap instead of a tack (PAD.grab < 0). PLA
+// is exactly today's numbers, so switching to PLA (or never touching this) leaves
+// existing prints unchanged. These objects are read fresh on every build, so
+// applying a profile + rebuilding is all it takes. density is g/cm^3 for the
+// grams receipt.
+const MATERIAL = {
+  pla:  { finGap: 0.2, tineBite: 0.30, padH: 0.5, padGrab:  0.05, propGap: 0.2,  density: 1.24 },
+  petg: { finGap: 0.3, tineBite: 0.15, padH: 0.3, padGrab: -0.10, propGap: 0.3,  density: 1.27 },
+};
+let materialDensity = MATERIAL.pla.density;
+
+function applyMaterial(name) {
+  const m = MATERIAL[name] || MATERIAL.pla;
+  FIN.gap = m.finGap;
+  FIN.tineBite = m.tineBite;
+  FIN.padH = m.padH;
+  PAD.grab = m.padGrab;
+  PROP.gap = m.propGap;
+  materialDensity = m.density;
+  // Reflect the profile's clearances in the exposed tunables so the numbers on
+  // screen match what will actually print (and a later hand-tweak starts from the
+  // material's baseline, not PLA's).
+  el('gap').value = m.propGap;
+  el('pad-grip').value = m.padGrab;
+}
+
+el('material').addEventListener('change', () => {
+  applyMaterial(el('material').value);
+  debouncedRefresh();
+});
+applyMaterial(el('material').value);   // sync density + tunables to the initial choice
 
 /** The fins-toggle button's appearance for the current finsVisible. Factored out
  *  so undo/redo can re-sync it after restoring the flag. */
@@ -1924,7 +1959,7 @@ function noSupportVerdict(c) {
       note: `This way up it needs no fins, 0 g.${roughCaveat}${strengthCaveat}` };
   }
   if ((c.bore ?? 0) === 0 && suggestCurBore > 0) {
-    const grams = (c.volume ?? 0) * PLA_DENSITY_G_CM3 / 1000;
+    const grams = (c.volume ?? 0) * materialDensity / 1000;
     return { tier: 'holeclean', badge: 'Bores clean',
       note: `This way up the bores point up, so no support sits inside a hole to scar it `
           + `(${fmtGrams(grams)} g of fins, all on the outside).` };

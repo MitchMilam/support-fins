@@ -676,6 +676,14 @@ export const PAD = {
                     // enough to snap off clean. Capped at padH so the tack only lands
                     // on the low near-edge strip; bounded by grab it can never
                     // recreate the deep 0.46mm slab weld the old flat pad made.
+                    //
+                    // May be NEGATIVE: PETG welds to a support far harder than the
+                    // PLA this 0.05 tack was tuned for, so the PETG profile sets a
+                    // gap (-0.1) -- the pad stands a hair BELOW the part and snaps
+                    // off clean. `conform` floors every column at 0.05 so a gap pad
+                    // stays a valid watertight solid AND still kisses the part at
+                    // the resting edge (where the underside drops to the plate) to
+                    // hold it, while gapping off across the rest of the footprint.
 };
 
 /**
@@ -769,7 +777,12 @@ function buildPad(contact, partTris, out) {
   // watertight solid -- no cells to drop, no holes in the disc.
   const conform = (x, y) => {
     const low = surfaceZAt(partTris, x, y);
-    return low === null ? FIN.padH : Math.min(FIN.padH, low + PAD.grab);
+    if (low === null) return FIN.padH;
+    // grab may be negative (a PETG gap). Floor at 0.05 so every column stays
+    // positive -- the disc watertight, no dropped cells -- and so a gap pad still
+    // kisses the part where its underside drops to the plate (the resting edge) to
+    // hold it, while gapping off across the rest of the footprint.
+    return Math.max(0.05, Math.min(FIN.padH, low + PAD.grab));
   };
   const nTheta = FIN.padSegs;
   const nRing = Math.max(2, Math.ceil(Math.max(r1, r2) / PAD.cell));
