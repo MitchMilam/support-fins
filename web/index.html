@@ -54,10 +54,10 @@
      title="Support Fins is free and open source — buy me a coffee on Ko-fi.">☕&nbsp;Ko-fi</a>
 </header>
 
-<!-- The two stacked left-hand panels share one fixed rail (top of screen to
-     bottom) that scrolls as a unit, so a short window can never let stats and the
-     rotate controls overlap. #fin-opts sits between them in source but is
-     position:fixed, so it opts out of this flex flow and stays top-right. -->
+<!-- The two stacked left-hand panels (stats + rotate controls) share one fixed
+     rail (top of screen to bottom) that scrolls as a unit, so a short window can
+     never let them overlap. The right-hand panels use the same trick (#right-rail,
+     below). -->
 <div id="left-rail">
 <aside id="stats" hidden>
   <dl>
@@ -79,6 +79,71 @@
   </dl>
 </aside>
 
+<aside id="orient" hidden>
+  <span class="lbl">Rotate 90°</span>
+  <button class="btn sm" id="rot-x" aria-label="Rotate 90 degrees about X">X</button>
+  <button class="btn sm" id="rot-y" aria-label="Rotate 90 degrees about Y">Y</button>
+  <button class="btn sm" id="rot-z" aria-label="Rotate 90 degrees about Z">Z</button>
+  <button class="btn sm" id="rot-reset">Reset</button>
+  <button class="btn sm" id="undo" title="Undo (⌘/Ctrl+Z)" disabled>Undo</button>
+  <button class="btn sm" id="redo" title="Redo (⇧⌘/Ctrl+Shift+Z)" disabled>Redo</button>
+  <p class="readout"><span id="rot-now">X 0° · Y 0° · Z 0°</span><span id="rot-delta"></span></p>
+  <p class="hint">Drag the rings to turn it, or:</p>
+  <button class="btn sm" id="lay-face"
+          title="Click this, then click a face to set it flat on the bed. Off by default so a stray click can't re-lay the part.">Lay a face flat</button>
+  <!-- Automatic strength view: no input. The faint frames show how the print is
+       layered (they stay horizontal while the part turns inside them), and the note
+       says where this orientation is weak. A printed part splits across its layers,
+       so orientation IS strength -- this makes that visible as you rotate. -->
+  <div class="layerview">
+    <label class="check layers-toggle" title="Show the horizontal print layers around the part.">
+      <input type="checkbox" id="show-layers">Show layers
+    </label>
+  </div>
+  <div class="suggest">
+    <div class="suggest-head">
+      <button class="btn sm" id="suggest-orient">Suggest orientation</button>
+      <button class="disclosure" id="suggest-toggle" hidden aria-expanded="true"
+              aria-label="Collapse suggestions" title="Collapse">&rsaquo;</button>
+    </div>
+    <div id="suggest-body">
+      <p class="hint" id="suggest-note"></p>
+      <div id="suggest-list" hidden></div>
+    </div>
+  </div>
+  <!-- Strength arrow: the layer view above is automatic; this checks the print
+       against how the part is loaded in use. Point the arrow the way the part is
+       pulled/pushed and it reports whether the layers resist that load and can turn
+       the part to the strongest printable pose. Only the direction matters (pull
+       model), so a handful of buttons is the honest input -- no 3D aiming, and
+       nothing that collides with click-to-lay. No fake "Nx stronger" number: the
+       verdict is qualitative. -->
+  <div class="loadfx">
+    <p class="loadfx-lede"><strong>Strength arrow</strong>: which way is it loaded?</p>
+    <div class="strength-pad" role="group" aria-label="Load direction">
+      <button class="btn sm" id="load-up"    aria-label="Load points up">↑</button>
+      <button class="btn sm" id="load-down"  aria-label="Load points down">↓</button>
+      <button class="btn sm" id="load-left"  aria-label="Load points left">←</button>
+      <button class="btn sm" id="load-right" aria-label="Load points right">→</button>
+      <button class="btn sm" id="load-front" aria-label="Load points toward you">⊙ front</button>
+      <button class="btn sm" id="load-back"  aria-label="Load points away from you">⊗ back</button>
+    </div>
+    <button class="btn sm" id="load-clear" hidden>Clear</button>
+    <p class="load-verdict" id="load-note" hidden></p>
+    <button class="btn sm" id="load-suggest" hidden>Turn to the strongest printable pose</button>
+  </div>
+</aside>
+<!-- Spacer AFTER the panels so they top-anchor and grow DOWNWARD: content that
+     appears on a click (the suggestion list, the load verdict) never shoves the
+     controls above it upward. Shrinks to nothing when the rail has to scroll. -->
+<div class="rail-spacer"></div>
+</div><!-- /left-rail -->
+
+<!-- Right rail: the fin options (top, grows down) and the status/receipt card
+     (bottom) share ONE fixed scrolling column, exactly like #left-rail, so a tall
+     draw-mode options panel can never overlap the receipt or overflow the viewport
+     -- under pressure the rail scrolls and a flex spacer keeps status pinned low. -->
+<div id="right-rail">
 <!-- Fin options live OUTSIDE the topbar on purpose. Inline, they appeared and
      disappeared with the toggle, which re-flowed the whole bar and pushed it onto
      a second row on narrower screens: the act of turning fins on moved every
@@ -178,70 +243,11 @@
     </div>
   </div>
 </aside>
-
-<aside id="orient" hidden>
-  <span class="lbl">Rotate 90°</span>
-  <button class="btn sm" id="rot-x" aria-label="Rotate 90 degrees about X">X</button>
-  <button class="btn sm" id="rot-y" aria-label="Rotate 90 degrees about Y">Y</button>
-  <button class="btn sm" id="rot-z" aria-label="Rotate 90 degrees about Z">Z</button>
-  <button class="btn sm" id="rot-reset">Reset</button>
-  <button class="btn sm" id="undo" title="Undo (⌘/Ctrl+Z)" disabled>Undo</button>
-  <button class="btn sm" id="redo" title="Redo (⇧⌘/Ctrl+Shift+Z)" disabled>Redo</button>
-  <p class="readout"><span id="rot-now">X 0° · Y 0° · Z 0°</span><span id="rot-delta"></span></p>
-  <p class="hint">Drag the rings to turn it, or:</p>
-  <button class="btn sm" id="lay-face"
-          title="Click this, then click a face to set it flat on the bed. Off by default so a stray click can't re-lay the part.">Lay a face flat</button>
-  <!-- Automatic strength view: no input. The faint frames show how the print is
-       layered (they stay horizontal while the part turns inside them), and the note
-       says where this orientation is weak. A printed part splits across its layers,
-       so orientation IS strength -- this makes that visible as you rotate. -->
-  <div class="layerview">
-    <label class="check layers-toggle" title="Show the horizontal print layers around the part.">
-      <input type="checkbox" id="show-layers">Show layers
-    </label>
-  </div>
-  <div class="suggest">
-    <div class="suggest-head">
-      <button class="btn sm" id="suggest-orient">Suggest orientation</button>
-      <button class="disclosure" id="suggest-toggle" hidden aria-expanded="true"
-              aria-label="Collapse suggestions" title="Collapse">&rsaquo;</button>
-    </div>
-    <div id="suggest-body">
-      <p class="hint" id="suggest-note"></p>
-      <div id="suggest-list" hidden></div>
-    </div>
-  </div>
-  <!-- Strength arrow: the layer view above is automatic; this checks the print
-       against how the part is loaded in use. Point the arrow the way the part is
-       pulled/pushed and it reports whether the layers resist that load and can turn
-       the part to the strongest printable pose. Only the direction matters (pull
-       model), so a handful of buttons is the honest input -- no 3D aiming, and
-       nothing that collides with click-to-lay. No fake "Nx stronger" number: the
-       verdict is qualitative. -->
-  <div class="loadfx">
-    <p class="loadfx-lede"><strong>Strength arrow</strong>: which way is it loaded?</p>
-    <div class="strength-pad" role="group" aria-label="Load direction">
-      <button class="btn sm" id="load-up"    aria-label="Load points up">↑</button>
-      <button class="btn sm" id="load-down"  aria-label="Load points down">↓</button>
-      <button class="btn sm" id="load-left"  aria-label="Load points left">←</button>
-      <button class="btn sm" id="load-right" aria-label="Load points right">→</button>
-      <button class="btn sm" id="load-front" aria-label="Load points toward you">⊙ front</button>
-      <button class="btn sm" id="load-back"  aria-label="Load points away from you">⊗ back</button>
-    </div>
-    <button class="btn sm" id="load-clear" hidden>Clear</button>
-    <p class="load-verdict" id="load-note" hidden></p>
-    <button class="btn sm" id="load-suggest" hidden>Turn to the strongest printable pose</button>
-  </div>
-</aside>
-<!-- Spacer AFTER the panels so they top-anchor and grow DOWNWARD: content that
-     appears on a click (the suggestion list, the load verdict) never shoves the
-     controls above it upward. Shrinks to nothing when the rail has to scroll. -->
 <div class="rail-spacer"></div>
-</div><!-- /left-rail -->
-
-<!-- Bottom-right status card: the pose/fin FEEDBACK worth glancing at, kept out of
-     the left rail so it can never shove the controls around when it grows. Bottom-
-     anchored, so new lines expand UPWARD into empty canvas. Holds: the "do you even
+<!-- Bottom-right status card: the pose/fin FEEDBACK worth glancing at. It shares
+     the right rail with the fin options above, pinned to the bottom by the flex
+     spacer, so new lines expand UPWARD into empty canvas and a tall options panel
+     scrolls the rail instead of colliding with it. Holds: the "do you even
      need me / prints support-free" note; must-see fin trouble (a support that
      couldn't build, a part balanced on a point); the honesty warning naming the
      small overhangs this pose leaves UNsupported; and the grams receipt payoff once
@@ -258,6 +264,7 @@
        title="Grams assume PLA and count only the fins + pad the tool adds, printed near-solid, cross-checked against the builder's fin volume. In test prints, breakaway fins used 20–45% less plastic and printed ~30% faster than slicer supports.">i</button>
   </div>
 </aside>
+</div><!-- /right-rail -->
 
 <div id="fps">—</div>
 

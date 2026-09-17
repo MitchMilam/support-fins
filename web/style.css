@@ -187,6 +187,29 @@ html, body {
 #left-rail > .rail-spacer { flex: 1 1 0; min-height: 0; pointer-events: none; }
 .rail-spacer[hidden] { display: none; }
 
+/* Right rail: same one-column-that-scrolls trick as #left-rail, for the fin
+   options (top, grows DOWN as draw mode adds controls) and the status/receipt
+   card (bottom). Independently-fixed, they used to grow into each other and off
+   the bottom of the screen in draw mode; sharing a rail with a flex spacer keeps
+   options up top, status pinned low, and scrolls the pair under a short window
+   instead of overlapping. pointer-events off on the rail so the gap orbits the
+   scene, back on for the cards. */
+#right-rail {
+  position: fixed;
+  top: 52px; bottom: 34px; right: 14px;   /* bottom clears the fps readout */
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: none;
+  scrollbar-width: thin;
+}
+#right-rail > * { pointer-events: auto; }
+#right-rail > .rail-spacer { flex: 1 1 0; min-height: 0; pointer-events: none; }
+
 /* ---------- stats ---------- */
 
 #stats {
@@ -310,9 +333,9 @@ html, body {
 /* Fin options, anchored under the toggle rather than inside the topbar, so
    turning fins on never moves another control. */
 #fin-opts {
-  position: fixed;
-  top: 52px; right: 14px;
-  z-index: 3;
+  width: 264px;
+  max-width: calc(100vw - 28px);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -539,9 +562,6 @@ html, body {
 
 /* ---------- bottom-right status card ---------- */
 #status {
-  position: fixed;
-  right: 14px; bottom: 34px;
-  z-index: 3;
   width: 264px;
   max-width: calc(100vw - 28px);
   box-sizing: border-box;
