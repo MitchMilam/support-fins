@@ -1381,15 +1381,31 @@ export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tin
                                       // face to attach a tine to. minTop defaults to
                                       // the flanged base; a squat wall passes its brim.
 
-    // Seat the tine's TOP at the part underside (z) and grow it DOWN by tineH, so a
-    // taller tine (a higher layer height) embeds its root DEEPER INTO THE WALL rather
-    // than rising up off the wall top into the breakaway gap and overshooting past the
-    // part. At tineH == gap this is exactly the old [wallTop, z] span; for tineH > gap
-    // the root sinks (z - tineH) below the wall top into solid wall, giving a
-    // volumetric join through the tine's full height instead of a coplanar top-seam
-    // that a tall single bead just cantilevers off (wallTop = z - gap). The bite tip
-    // still tops out flush with the underside, never poking through the part face.
-    const tineBot = z - tineH;
+    // LAYER-SNAP so the tine prints as exactly ONE bead, not two partial layers.
+    // A tine is tineH tall (= the slicer's layer height) precisely so it slices as a
+    // single continuous bead that snaps clean. But its top used to be pinned to the
+    // part underside `z`, which is almost never on the layer grid -- so a 0.2mm tine
+    // straddled a layer boundary and sliced into two thin layers (Matthew's cube: all
+    // 22 tines spanned 2 layers, each a 0.15mm + 0.05mm pair). A two-layer tine is a
+    // taller, stronger weld that marks worse and won't bend-snap clean. Fix: snap the
+    // tine's span onto the layer grid so it fills exactly one cell [tineBot, tineTop].
+    //
+    // Snap to the NEAREST grid line, not the one below. Flooring (always down) drops a
+    // tine whose underside sits just under a layer line by nearly a full layer -- then
+    // the part's own sub-layer sliver above it is too thin to print and the slicer
+    // leaves a full empty layer between the tine top and the part's first real layer:
+    // a "missing layer" with the part edge floating over it (Matthew's cube: every
+    // underside sat ~0.19 above a line, so every tine dropped ~0.19). Rounding keeps
+    // the tine top within half a layer of the underside, so it lands right where the
+    // part's nearest layer begins -- supporting it -- and its bottom stays in the same
+    // or the adjacent grid cell as the wall's top layer, so it still rests on the wall.
+    // Grid is plate-origin (z = 0) at the layer height: exact when the slicer's first-
+    // layer height equals its layer height (the common default); a different first
+    // layer just offsets every tine by the same sub-layer amount. The probe below
+    // still uses the underside level (zMid), so PLACEMENT is unchanged -- only the
+    // built box moves onto the grid.
+    const tineTop = Math.round(z / tineH) * tineH;
+    const tineBot = tineTop - tineH;
     const zMid = z - tineH / 2;
 
     // BITE DIRECTION comes from the PART (which way the nearest face points),
@@ -1412,7 +1428,7 @@ export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tin
       [-PROP.tineOverlap, -half], [PROP.tineBite, -half],
       [PROP.tineBite, half], [-PROP.tineOverlap, half],
     ];
-    boxExtrude(poly, tineBot, z, P, out);
+    boxExtrude(poly, tineBot, tineTop, P, out);
     // Test seam: tests/tines_realparts.test.js sets globalThis.__TINECAP to an array
     // and reads back each tine's seed + bite heading to verify grip on real parts
     // through the whole pipeline. Undefined in the browser -> a zero-cost noop.
