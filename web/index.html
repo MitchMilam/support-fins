@@ -48,7 +48,7 @@
   <span class="spacer"></span>
   <button class="btn" id="fins-toggle">Add fins</button>
   <button class="btn" id="export">Export STL</button>
-  <button class="btn" id="export-3mf" title="Opens oriented and support-free in Bambu Studio, OrcaSlicer, or PrusaSlicer.">Export 3MF</button>
+  <button class="btn" id="export-3mf" title="Opens oriented and support-free in Bambu Studio, OrcaSlicer, or PrusaSlicer. Bambu/PrusaSlicer may note 'no config, geometry only' — expected; the part still comes in correct.">Export 3MF</button>
   <span class="badge" title="No file ever leaves your machine.">runs entirely in your browser</span>
   <a class="btn kofi" href="https://ko-fi.com/matthewtrahan" target="_blank" rel="noopener"
      title="Support Fins is free and open source — buy me a coffee on Ko-fi.">☕&nbsp;Ko-fi</a>
@@ -279,6 +279,10 @@
       <li><strong>Rotate it.</strong> Red marks every surface that needs support.</li>
       <li><strong>Export.</strong> Fins come baked in — no slicer supports needed.</li>
     </ol>
+    <p class="small">Opening the 3MF, Bambu Studio and PrusaSlicer may note it has
+      “no config” and load the geometry only — that’s expected. The file is pure
+      geometry with no slicer profile baked in, so it opens the same in every slicer;
+      your part comes in correctly oriented and sized. Just slice with supports off.</p>
     <p class="small">Nothing is uploaded. The file is read inside this tab and never
       leaves your machine.</p>
     <p class="kofi-line">Free and open source. If it ever saves you a print,

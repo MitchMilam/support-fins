@@ -48,6 +48,22 @@ point; see `docs/FIN-SPEC.md`), STL and 3MF export.
 
 Still open: scale-aware fin profiles, and the bed pad on tilted exports.
 
+### The "no config, geometry only" notice
+
+Opening the 3MF, **Bambu Studio** ("invalid config, load geometry data only") and
+**PrusaSlicer** ("does not contain PrusaSlicer configuration. Only geometry was
+loaded.") show a notice and import just the mesh. This is **expected and harmless** —
+every slicer shows it for any geometry-only 3MF (Fusion 360, FreeCAD, even the 3MF
+Consortium's own reference files). The part imports correctly oriented and sized; the
+fins come in as intended. Just slice with supports off. (OrcaSlicer opens it without a
+notice.)
+
+The export ships **pure geometry with no slicer profile embedded** on purpose: baking
+in a profile would silence the notice but replace whoever-opens-it's printer/filament/
+print settings with ours on load, and it would have to be re-authored per slicer *and*
+per slicer version — a worse trade than a one-time, benign notice on a file whose
+geometry is already right. See `web/threemf.js` for the writer.
+
 ## Run it locally
 
 The web app is vanilla ES modules — no build step. Serve it with the included dev server
