@@ -57,6 +57,18 @@ The web app is vanilla ES modules — no build step. Serve it with the included 
 python3 dev-server.py            # http://localhost:8731/
 ```
 
+Or run the same `web/` directory in Docker — nginx on the host's 8731, so the URL
+is identical to the dev server:
+
+```bash
+docker compose up --build        # http://localhost:8731/
+```
+
+There's no build step and no backend, so the image is just `nginx:stable-alpine`
+serving static files with cache headers that match the dev server. See
+[`docker-compose.yml`](docker-compose.yml), [`Dockerfile`](Dockerfile), and
+[`nginx.conf`](nginx.conf).
+
 The Python prototype is the proof of concept the engine was ported from — plain mesh math,
 no CAD kernel:
 
