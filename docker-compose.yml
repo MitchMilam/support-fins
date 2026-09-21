@@ -1,0 +1,27 @@
+# Run the Support Fins web app in a container.
+#
+#   docker compose up --build
+#   # -> http://localhost:8731/
+#
+# The app is a buildless static SPA (three.js is vendored under web/vendor/),
+# so the image is just nginx serving web/ on :80. Host port 8731 matches
+# `python3 dev-server.py` so the URL is identical between dev and container.
+
+services:
+  web:
+    image: support-fins
+    container_name: support-fins
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8731:80"
+    restart: unless-stopped
+    healthcheck:
+      # nginx:alpine ships busybox wget. Confirms nginx is actually serving /,
+      # not just that the master process is alive.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
