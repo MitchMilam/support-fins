@@ -89,13 +89,17 @@ Deno.test('tine height tracks the layer-height setting, not a hardcoded 0.2', ()
   }
 });
 
-Deno.test('the tine tops out at the underside and roots DOWN into the wall (not up off it)', () => {
-  // The join bug: the tine used to seat its BOTTOM on the wall top and grow UP, so a
-  // taller tine (bigger layer height) rose off the wall top into the breakaway gap
-  // and overshot past the part -- connected to the wall only on a coplanar seam. It
-  // now seats its TOP at the underside and grows DOWN, so its root embeds into the
-  // wall by (tineH - gap). Pin both: top flush with the local surface, root below the
-  // wall top when the layer exceeds the gap.
+Deno.test('the tine SNAPS onto the layer grid (one cell), within half a layer of the underside, roots into the wall', () => {
+  // Two bugs pinned here at once:
+  //  1. The LAYER-STRADDLE bug (Matthew's cube): the tine top was pinned to the part
+  //     underside, which is almost never on the layer grid, so a one-layer-tall tine
+  //     straddled a boundary and sliced into TWO thin partial layers -- a taller weld
+  //     that marks worse and won't bend-snap clean. It now snaps its span DOWN onto
+  //     the grid so it fills exactly one layer cell (prints as one bead).
+  //  2. The old JOIN bug: the tine must root DOWN into the wall, not cantilever off a
+  //     coplanar top seam. Snapping down only sinks the root deeper, so this still holds.
+  // Pin: exactly one layer cell; top on the grid at or below the underside (never
+  // poking up through the part face); root below the wall top when the layer > gap.
   const topo = tiltedBlockTopo(-15, 15, -20, 20, 0, 30, 40);
   const rot = [1, 0, 0, 0, 1, 0, 0, 0, 1], offset = { x: 0, y: 0, z: 0 };
   const line = [];
@@ -117,10 +121,53 @@ Deno.test('the tine tops out at the underside and roots DOWN into the wall (not 
     cx /= 36;
     const surf = surfaceZAt(topo.pos, cx, 0);
     const wallTop = surf - PROP.gap;
-    assertClose(hi, surf, 1e-6, `tooth ${i} top ${hi.toFixed(3)} not flush with the underside ${surf.toFixed(3)} (would poke through the part)`);
-    assertClose(wallTop - lo, H - PROP.gap, 1e-6,
-      `tooth ${i} root embeds ${(wallTop - lo).toFixed(3)}mm, not the expected ${(H - PROP.gap).toFixed(3)}mm into the wall`);
+    // exactly one layer cell on the plate-origin grid at H -> prints as one bead
+    const cells = Math.ceil(hi / H - 1e-4) - Math.floor(lo / H + 1e-4);
+    assert(cells === 1, `tooth ${i} spans ${cells} layer cells at H=${H} (z ${lo.toFixed(3)}..${hi.toFixed(3)}) -- the two-layer straddle bug`);
+    assertClose(hi - lo, H, 1e-6, `tooth ${i} is ${(hi - lo).toFixed(3)}mm tall, not one layer (${H})`);
+    // top snapped onto the NEAREST grid line, within half a layer of the underside so
+    // it lands where the part's nearest layer begins (no full missing layer, no deep
+    // poke) -- rounding, not flooring, which would drop a near-line tine a full layer.
+    assertClose(hi, Math.round(surf / H) * H, 1e-6,
+      `tooth ${i} top ${hi.toFixed(3)} not snapped to the nearest layer line to the underside ${surf.toFixed(3)}`);
+    assert(Math.abs(hi - surf) <= H / 2 + 1e-6, `tooth ${i} top ${hi.toFixed(3)} is more than half a layer from the underside ${surf.toFixed(3)}`);
+    // still roots into the wall (bottom at or below the wall top): with a layer taller
+    // than the gap it sinks below, so the join is a volume, not a coplanar seam it
+    // cantilevers off.
+    assert(lo <= wallTop + 1e-6, `tooth ${i} root ${lo.toFixed(3)} sits above the wall top ${wallTop.toFixed(3)} (would float off the wall)`);
   }
+});
+
+Deno.test('REGRESSION: an off-grid underside still yields one-layer tines (the cube 2-layer bug)', () => {
+  // The cube reproduction: tilt a block so its underside lands OFF the layer grid and
+  // confirm every tine still occupies a single layer cell at the default (gap-height)
+  // layer. Before the layer-snap, all of these straddled two layers.
+  const topo = tiltedBlockTopo(-15, 15, -20, 20, 0, 30, 45);
+  const rot = [1, 0, 0, 0, 1, 0, 0, 0, 1], offset = { x: 0, y: 0, z: 0 };
+  const line = [];
+  for (let x = -8; x <= 8; x += 1) {
+    const z = surfaceZAt(topo.pos, x, 0);
+    if (z !== null) line.push([x, 0, z]);
+  }
+  const out = [];
+  const n = emitTines(line, null, topo, rot, offset, out);   // default LAYER-height tine
+  assert(n >= 3, `need tines to test, got ${n}`);
+  let offGrid = 0, twoLayer = 0;
+  for (let i = 0; i < n; i++) {
+    let lo = Infinity, hi = -Infinity, cx = 0;
+    for (let v = i * 36; v < (i + 1) * 36; v++) {
+      if (out[v][2] < lo) lo = out[v][2];
+      if (out[v][2] > hi) hi = out[v][2];
+      cx += out[v][0];
+    }
+    cx /= 36;
+    const surf = surfaceZAt(topo.pos, cx, 0);
+    if (Math.abs((surf / LAYER) - Math.round(surf / LAYER)) > 1e-3) offGrid++;
+    const cells = Math.ceil(hi / LAYER - 1e-4) - Math.floor(lo / LAYER + 1e-4);
+    if (cells !== 1) twoLayer++;
+  }
+  assert(offGrid > 0, 'test setup: undersides landed on the grid, not exercising the bug');
+  assert(twoLayer === 0, `${twoLayer}/${n} tines still straddle two layers -- the snap regressed`);
 });
 
 Deno.test('a squat wall (low contact) carries tines only with the brim-height floor', () => {
