@@ -1,0 +1,38 @@
+# Keep the build context small: the nginx image only ever COPYs web/ (plus
+# Dockerfile, nginx.conf, LICENSE at the repo root). Everything else here is a
+# dev/research artifact that should not enter the image.
+
+# VCS + OS
+.git/
+.gitignore
+.DS_Store
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+
+# Dev-only trees -- not part of the web artifact served by nginx.
+prototype/
+plugin/
+tests/
+docs/
+assets/
+
+# Never ship model files (the app ships none, but guard local dev artifacts).
+*.stl
+out/
+dev-models/
+prototype/stress/models/
+
+# Build artifacts (none exist in this buildless repo, but guard anyway).
+node_modules/
+dist/
+
+# The dev servers and Cloudflare redirect file are not used by the nginx image
+# (redirects are implemented in nginx.conf).
+dev-server.py
+web/dev-server.py
+web/_redirects
+
+# Docs aren't needed at runtime.
+*.md
