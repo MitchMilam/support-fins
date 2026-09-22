@@ -10,7 +10,7 @@
 //   - support/non-printable bodies stay out of the part geometry;
 //   - a malformed file fails loudly rather than opening blank or sheared.
 
-import { WEB, assert, assertClose, block } from './_util.js';
+import { WEB, MODELS, assert, assertClose, block, readSTL, buildTopology, analyze, rotX } from './_util.js';
 
 const { writeThreeMF, readThreeMF } = await import(`${WEB}threemf.js`);
 const { zipStore } = await import(`${WEB}zip.js`);
@@ -415,4 +415,118 @@ Deno.test('3MF objects come back separately, named from model_settings.config', 
   assert(r.objects.length === 2, `got ${r.objects.length} objects, want 2`);
   assert(r.objects[0].name === 'waffle' && r.objects[1].name === 'butter',
     `names ${r.objects.map((o) => o.name)}, want waffle, butter (extension stripped)`);
+});
+
+// --- unit: more production-extension shapes --------------------------------
+
+Deno.test('3MF production extension: a RELATIVE p:path resolves', async () => {
+  // Absolute (/3D/...) is what Bambu writes, but a relative target is legal and
+  // some writers use it; partName() has to normalise both to the same entry.
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="10" type="model"><components>'
+    + '<component p:path="3D/Objects/a.model" objectid="1"/></components></object>'
+    + '</resources><build><item objectid="10"/></build></model>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/a.model', data: triPart(1, 3) },
+  ]));
+  assert(bounds(r.positions).hi[0] === 3, `relative p:path did not resolve (max x ${bounds(r.positions).hi[0]})`);
+});
+
+Deno.test('3MF production extension: a two-hop p:path chain resolves', async () => {
+  // root -> a.model (assembly) -> b.model (the mesh). Both hops must be walked.
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="100" type="model"><components>'
+    + '<component p:path="/3D/Objects/a.model" objectid="1"/></components></object>'
+    + '</resources><build><item objectid="100"/></build></model>';
+  const a = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="1" type="model"><components>'
+    + '<component p:path="/3D/Objects/b.model" objectid="1"/></components></object>'
+    + '</resources></model>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/a.model', data: a },
+    { name: '3D/Objects/b.model', data: triPart(1, 4) },
+  ]));
+  assert(bounds(r.positions).hi[0] === 4, `two-hop chain gave max x ${bounds(r.positions).hi[0]}, want 4`);
+});
+
+Deno.test('3MF production extension: the root unit converts geometry pulled from a part', async () => {
+  // The mesh is in its own part but the model is authored in inches; the
+  // "1/25 scale on the way in" conversion must still happen through p:path.
+  const root = `<?xml version="1.0"?><model unit="inch" xmlns="${CORE_NS}"><resources>`
+    + '<object id="10" type="model"><components>'
+    + '<component p:path="/3D/Objects/a.model" objectid="1"/></components></object>'
+    + '</resources><build><item objectid="10"/></build></model>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/a.model', data: triPart(1, 1) },
+  ]));
+  assertClose(bounds(r.positions).hi[0], 25.4, 1e-3, 'inch edge through p:path');
+});
+
+Deno.test('3MF a component that references its own object does not loop', async () => {
+  // An assembly object listing itself among its components: the mesh must come
+  // through once and the self-reference bail, not recurse forever (cycle guard).
+  const xml = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="1" type="model"><mesh><vertices>'
+    + '<vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/>'
+    + '</vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>'
+    + '<object id="2" type="model"><components>'
+    + '<component objectid="1"/><component objectid="2"/></components></object>'
+    + '</resources><build><item objectid="2"/></build></model>';
+  const r = await readThreeMF(await pack(xml));
+  assert(r.positions.length === 9, `self-cycle gave ${r.positions.length / 9} tris, want 1`);
+});
+
+// --- integration: a 3MF part drives the real overhang engine ---------------
+// The point of the reader is that a 3MF-loaded part behaves EXACTLY like the
+// same part loaded as STL through the actual analysis, not just that the bytes
+// parse. These run a real stress model through buildTopology + analyze both ways.
+
+const posAttr = (arr) => ({ getAttribute: (k) => (k === 'position' ? { array: arr } : null) });
+
+/** A model part whose one object is a raw triangle soup (3 verts per face). */
+function soupModelPart(id, tris, unit = 'millimeter') {
+  let verts = '', faces = '';
+  for (const p of tris) verts += `<vertex x="${p[0]}" y="${p[1]}" z="${p[2]}"/>`;
+  for (let i = 0; i + 3 <= tris.length; i += 3) faces += `<triangle v1="${i}" v2="${i + 1}" v3="${i + 2}"/>`;
+  return `<?xml version="1.0"?><model unit="${unit}" xmlns="${CORE_NS}"><resources>`
+    + `<object id="${id}" type="model"><mesh><vertices>${verts}</vertices>`
+    + `<triangles>${faces}</triangles></mesh></object></resources></model>`;
+}
+
+Deno.test('INTEGRATION: a core 3MF part analyzes identically to the same STL', async () => {
+  const stl = readSTL(Deno.readFileSync(`${MODELS}lbracket.stl`));
+  const rot = rotX(40);
+  const a = analyze(buildTopology(posAttr(stl)), 45, rot);
+
+  const blob = writeThreeMF(triples(stl), [], 'lbracket');
+  const r = await readThreeMF(new Uint8Array(await blob.arrayBuffer()));
+  const b = analyze(buildTopology(posAttr(r.positions)), 45, rot);
+
+  for (const k of ['x', 'y', 'z']) assertClose(b.size[k], a.size[k], 1e-3, `size ${k}`);
+  assertClose(b.overArea, a.overArea, a.overArea * 1e-3 + 1e-4, 'overhang area');
+  assertClose(b.bedArea, a.bedArea, a.bedArea * 1e-3 + 1e-4, 'bed-contact area');
+  assert(b.regions.length === a.regions.length, `regions ${b.regions.length} vs STL's ${a.regions.length}`);
+});
+
+Deno.test('INTEGRATION: a production-extension 3MF (mesh via p:path) analyzes identically', async () => {
+  const stl = readSTL(Deno.readFileSync(`${MODELS}lbracket.stl`));
+  const rot = rotX(40);
+  const a = analyze(buildTopology(posAttr(stl)), 45, rot);
+
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="100" type="model"><components>'
+    + '<component p:path="/3D/Objects/mesh.model" objectid="1"/></components></object>'
+    + '</resources><build><item objectid="100"/></build></model>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/mesh.model', data: soupModelPart(1, triples(stl)) },
+  ]));
+  const b = analyze(buildTopology(posAttr(r.positions)), 45, rot);
+
+  for (const k of ['x', 'y', 'z']) assertClose(b.size[k], a.size[k], 1e-3, `size ${k} via p:path`);
+  assertClose(b.overArea, a.overArea, a.overArea * 1e-3 + 1e-4, 'overhang area via p:path');
+  assert(b.regions.length === a.regions.length, `regions ${b.regions.length} vs STL's ${a.regions.length}`);
 });
