@@ -64,6 +64,16 @@ that aren't fin geometry, because the file format is equally part of the product
   still fail loudly;
 - **support/non-printable bodies** stay out of the part geometry (leftover support
   in a plate would otherwise poison the overhang analysis);
+- the **production extension** reads: Bambu/Orca/MakerWorld put each object in its
+  own part (`3D/Objects/object_N.model`) referenced by `<component p:path="...">`,
+  and a root-only reader throws on these -- which is most real multi-object files;
+- object ids are **scoped per part file**: two parts legally reuse `id="1"`, so a
+  single global id->object map (three.js's `ThreeMFLoader`) silently assembles the
+  wrong geometry on a clash -- the test pins that the two survive as distinct edge
+  lengths (this is issue #14's second, quieter half);
+- a plate's objects come back **separately and named** (from
+  `Metadata/model_settings.config`) so the caller can let the user pick which to
+  fin, rather than merging a plate of distinct models into one soup;
 - a broken file **fails loudly**: a triangle indexing a missing vertex drops that
   face alone (dropping a partial one would shear the rest of the mesh), and a
   non-ZIP or mesh-free package throws rather than opening blank.

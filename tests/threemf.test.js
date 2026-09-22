@@ -334,3 +334,85 @@ Deno.test('a 3MF with no mesh anywhere is rejected', async () => {
   } catch { threw = true; }
   assert(threw, 'a geometry-free 3MF should throw rather than open blank');
 });
+
+// --- the production extension (real slicer output) -------------------------
+// Bambu/Orca/MakerWorld split each object into its own part and reference it
+// from the root by <component p:path="..."/>. This is where issue #14 bit:
+// a reader that parses only the root throws, and one that pools every part's
+// ids into a single map silently assembles the wrong geometry on an id clash.
+
+const CORE_NS = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
+
+/** A model part holding one right-triangle object of the given leg length. */
+function triPart(id, edge) {
+  const verts = `<vertex x="0" y="0" z="0"/><vertex x="${edge}" y="0" z="0"/><vertex x="0" y="${edge}" z="0"/>`;
+  return `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + `<object id="${id}" type="model"><mesh><vertices>${verts}</vertices>`
+    + '<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>'
+    + '</resources></model>';
+}
+
+/** Package arbitrary named parts, with the OPC boilerplate a reader expects. */
+async function packParts(entries) {
+  const blob = zipStore([
+    { name: '[Content_Types].xml', data: '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>' },
+    { name: '_rels/.rels', data: '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + `<Relationship Id="r" Target="/3D/3dmodel.model" Type="${REL}"/></Relationships>` },
+    ...entries,
+  ]);
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+Deno.test('3MF production extension: a mesh in a separate part (p:path) reads', async () => {
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="10" type="model"><components>'
+    + '<component p:path="/3D/Objects/a.model" objectid="1"/></components></object>'
+    + '</resources><build><item objectid="10"/></build></model>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/a.model', data: triPart(1, 3) },
+  ]));
+  assert(r.positions.length === 9, `p:path read gave ${r.positions.length / 9} tris, want 1`);
+  assert(bounds(r.positions).hi[0] === 3, `wrong geometry pulled from the part (max x ${bounds(r.positions).hi[0]})`);
+});
+
+Deno.test('3MF per-file id scoping: colliding ids across parts stay distinct', async () => {
+  // Both parts legally define object id="1" -- ids are scoped to the file, not
+  // the package. A global id->object map (three.js's ThreeMFLoader) would make
+  // both build items resolve to the SAME geometry, so the two edge lengths would
+  // come back equal instead of 1 and 5. That silent swap is the #14 bug.
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="10" type="model"><components><component p:path="/3D/Objects/a.model" objectid="1"/></components></object>'
+    + '<object id="20" type="model"><components><component p:path="/3D/Objects/b.model" objectid="1"/></components></object>'
+    + '</resources><build><item objectid="10"/><item objectid="20"/></build></model>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/a.model', data: triPart(1, 1) },
+    { name: '3D/Objects/b.model', data: triPart(1, 5) },
+  ]));
+  assert(r.objects.length === 2, `got ${r.objects.length} objects, want 2`);
+  const sizes = r.objects.map((o) => Math.round(o.bbox.size[0])).sort((x, y) => x - y);
+  assert(sizes[0] === 1 && sizes[1] === 5,
+    `edge lengths ${sizes}, want 1 and 5 -- equal means ids collided into one geometry`);
+});
+
+Deno.test('3MF objects come back separately, named from model_settings.config', async () => {
+  // A plate of distinct objects must arrive as a list the caller can offer the
+  // user, not a single merged soup -- and with the human names Bambu stores.
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="10" type="model"><components><component p:path="/3D/Objects/a.model" objectid="1"/></components></object>'
+    + '<object id="20" type="model"><components><component p:path="/3D/Objects/b.model" objectid="1"/></components></object>'
+    + '</resources><build><item objectid="10"/><item objectid="20"/></build></model>';
+  const config = '<?xml version="1.0"?><config>'
+    + '<object id="10"><metadata key="name" value="waffle.stl"/></object>'
+    + '<object id="20"><metadata key="name" value="butter.stl"/></object></config>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/a.model', data: triPart(1, 2) },
+    { name: '3D/Objects/b.model', data: triPart(1, 4) },
+    { name: 'Metadata/model_settings.config', data: config },
+  ]));
+  assert(r.objects.length === 2, `got ${r.objects.length} objects, want 2`);
+  assert(r.objects[0].name === 'waffle' && r.objects[1].name === 'butter',
+    `names ${r.objects.map((o) => o.name)}, want waffle, butter (extension stripped)`);
+});
