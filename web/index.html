@@ -292,6 +292,26 @@
   </div>
 </div>
 
+<!-- Object picker: a 3MF plate can hold several distinct objects (a Bambu/
+     MakerWorld file often does), and this tool fins ONE part. Rather than merge
+     a plate of unrelated bodies into one soup, we let the user choose. Shown
+     only when a file has more than one object; single-object files skip it. -->
+<div id="picker" hidden>
+  <div class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+    <h2 id="picker-title">This 3MF has several objects</h2>
+    <p class="picker-sub">Pick the one to add fins to. Check more than one to merge
+      them into a single part.</p>
+    <ul id="picker-list"></ul>
+    <div class="picker-foot">
+      <span id="picker-hint" class="note"></span>
+      <span class="picker-actions">
+        <button class="btn" id="picker-cancel">Cancel</button>
+        <button class="btn primary" id="picker-load">Load</button>
+      </span>
+    </div>
+  </div>
+</div>
+
 <script type="module" src="./app.js"></script>
 </body>
 </html>

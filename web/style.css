@@ -644,3 +644,54 @@ html, body {
   border-bottom: 1px solid color-mix(in srgb, #ff8a5b 55%, transparent);
 }
 #drop .kofi-line .kofi:hover { color: #ffb492; border-bottom-color: #ff8a5b; }
+
+/* ---------- 3MF object picker ---------- */
+/* A plate with several objects: choose which body to fin (or check several to
+   merge). Sits above everything, including the drop scrim. */
+#picker {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.picker-panel {
+  width: min(440px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px;
+  border: 1px solid var(--btn-line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.picker-panel h2 { margin: 0 0 4px; font-size: 15px; color: var(--text); }
+.picker-sub { margin: 0 0 12px; font-size: 12px; color: var(--dim); line-height: 1.4; }
+#picker-list {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+#picker-list li { border-bottom: 1px solid var(--line); }
+#picker-list li:last-child { border-bottom: 0; }
+#picker-list label {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 9px 11px;
+  cursor: pointer;
+}
+#picker-list label:hover { background: var(--btn); }
+#picker-list input { margin: 0; accent-color: var(--accent); align-self: center; }
+#picker-list .pk-name { flex: 1; color: var(--text); font-size: 13px; word-break: break-word; }
+#picker-list .pk-meta { color: var(--dim); font-size: 11px; white-space: nowrap; }
+.picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.picker-foot .note { margin: 0; font-size: 11px; color: var(--dim); }
+.picker-actions { display: flex; gap: 8px; flex-shrink: 0; }
