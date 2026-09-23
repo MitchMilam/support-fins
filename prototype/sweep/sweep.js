@@ -83,6 +83,65 @@ for (const d of MODEL_DIRS) {
   }
 }
 
+// OVERHANG COVERAGE, the number the gate should judge by. Tines and wall length
+// are proxies: a layout change that trades a wedge for real walls loses tines and
+// still covers more (tube X25 sparse: 30 -> 20 tines, 51% -> 76%). This mirrors
+// check_stl.py coverage() constant-for-constant -- an overhang face (normal below
+// 45deg, clear of the bed) is served when some support vertex sits within
+// maxUnsupportedSpan of its centroid in plan AND 0..3mm below it (so a foot
+// standing nearby doesn't count) -- without loading trimesh, so all 837 cases
+// get it in the ~1 min sweep. The span comes from THIS checkout, so base and
+// head are measured with one ruler.
+const { PROP: HERE_PROP } = await import(`${ROOT}web/prop.js`);
+const SPAN = HERE_PROP.maxUnsupportedSpan;
+const OVER_COS = Math.cos(Math.PI / 4) + 1e-4, BED_EPS = 0.35, SUB = 3;
+function coverage(part, sup) {
+  let zmin = Infinity;
+  for (const p of part) if (p[2] < zmin) zmin = p[2];
+  const cell = SPAN, grid = new Map();
+  const key = (i, j) => i * 100003 + j;
+  for (const v of sup) {
+    const k = key(Math.floor(v[0] / cell), Math.floor(v[1] / cell));
+    let a = grid.get(k); if (!a) grid.set(k, (a = [])); a.push(v);
+  }
+  const servedAt = (cx, cy, cz) => {
+    const gi = Math.floor(cx / cell), gj = Math.floor(cy / cell);
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      for (const v of grid.get(key(gi + di, gj + dj)) || []) {
+        if (v[2] > cz - 3 && v[2] < cz + 0.5 && Math.hypot(v[0] - cx, v[1] - cy) <= SPAN) return true;
+      }
+    }
+    return false;
+  };
+  let total = 0, served = 0;
+  for (let i = 0; i < part.length; i += 3) {
+    const a = part[i], b = part[i + 1], c = part[i + 2];
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-12 || nz / len >= -OVER_COS) continue;
+    if (Math.max(a[2], b[2], c[2]) - zmin < BED_EPS) continue;
+    // Judge the WHOLE face, not its centroid: a low-poly face is one huge
+    // triangle (bigplate's underside is two), and its centroid alone flipped
+    // bigplate Y35 sparse 100% -> 58% while the branch had MORE walls under it.
+    // Split into n x n sub-triangles (~SUB mm edges), each judged at its own
+    // centroid with its share of the area.
+    const n = Math.max(1, Math.ceil(Math.max(Math.hypot(ux, uy, uz), Math.hypot(vx, vy, vz),
+      Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2])) / SUB));
+    const piece = len / 2 / (n * n);
+    for (let i1 = 0; i1 < n; i1++) for (let j1 = 0; j1 < n - i1; j1++) {
+      // upright piece at (i1, j1), plus the inverted one beside it
+      for (const [s1, t1] of j1 < n - i1 - 1 ? [[i1 + 1 / 3, j1 + 1 / 3], [i1 + 2 / 3, j1 + 2 / 3]] : [[i1 + 1 / 3, j1 + 1 / 3]]) {
+        const cx = a[0] + (ux * s1 + vx * t1) / n, cy = a[1] + (uy * s1 + vy * t1) / n, cz = a[2] + (uz * s1 + vz * t1) / n;
+        total += piece;
+        if (servedAt(cx, cy, cz)) served += piece;
+      }
+    }
+  }
+  return total > 0 ? r2((100 * served) / total) : null;
+}
+
 const only = args.only ? new Set(JSON.parse(Deno.readTextFileSync(args.only))) : null;
 if (args.export) Deno.mkdirSync(args.export, { recursive: true });
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -102,6 +161,13 @@ for (const [name, pos] of models) {
         const caps = globalThis.__TINECAP;
         const walls = (b.props || []).filter((p) => p.line && p.line.length && !p.squat);
         const squat = (b.props || []).filter((p) => p.squat);
+        const part = [];
+        for (let i = 0; i < pos.length; i += 3) {
+          const x = pos[i], y = pos[i + 1], z = pos[i + 2], o = res.offset;
+          part.push([rot[0] * x + rot[3] * y + rot[6] * z + o.x,
+                     rot[1] * x + rot[4] * y + rot[7] * z + o.y,
+                     rot[2] * x + rot[5] * y + rot[8] * z + o.z]);
+        }
         const len = (p) => Math.hypot(p.line.at(-1)[0] - p.line[0][0], p.line.at(-1)[1] - p.line[0][1]);
         out[key] = {
           ms: Math.round(ms),
@@ -113,17 +179,10 @@ for (const [name, pos] of models) {
           unserved: typeof b.unserved === 'number' ? b.unserved : (b.unserved?.length ?? 0),
           tris: b.triangles.length / 3,
           grams: r2(Math.abs(b.volume ?? 0) * 1.24 / 1000),
+          cov: coverage(part, b.triangles),
         };
         if (args.export) {
           // check_stl.py naming: <case>.stl (part+added), -part, -fins, -pad
-          const part = [];
-          const { offset } = res;
-          for (let i = 0; i < pos.length; i += 3) {
-            const x = pos[i], y = pos[i + 1], z = pos[i + 2];
-            part.push([rot[0] * x + rot[3] * y + rot[6] * z + offset.x,
-                       rot[1] * x + rot[4] * y + rot[7] * z + offset.y,
-                       rot[2] * x + rot[5] * y + rot[8] * z + offset.z]);
-          }
           const base = `${args.export}/${key.replaceAll('|', '__')}`;
           Deno.writeFileSync(`${base}.stl`, writeSTL([...part, ...b.triangles, ...(b.padTriangles || [])]));
           Deno.writeFileSync(`${base}-part.stl`, writeSTL(part));
