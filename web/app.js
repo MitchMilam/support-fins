@@ -248,6 +248,11 @@ function setPart(geometry, filename) {
 
   // A new part starts with no hand-drawn walls and a fresh print-space cache.
   drawnWalls = [];
+  // Per-fin removals are keyed by a content signature that can coincidentally
+  // match a different model's fins, so they must NOT carry across parts -- clear
+  // them here alongside the walls, or loading a new STL silently drops fins.
+  removedSigs = new Set();
+  removedIds = new Set();
   drawAugment = false;
   drawMsg = '';
   printTrisDirty = true;
@@ -621,6 +626,7 @@ let removedSigs = new Set(); // spatial signatures of fins the user clicked away
 let removedIds = new Set();  // ids removed in the CURRENT build (derived in applyBuilt)
 let removeMode = false;      // armed: hover highlights a fin red, click removes it
 let hoverFinMesh = null;     // red translucent overlay of the fin under the pointer
+let hoverFinId = null;       // id of the fin hoverFinMesh currently draws (rebuild cache)
 let triToFin = [];           // filtered finMesh triangle index → finRecords index
 
 // Red hover overlay for the fin a removal click would drop. Same depth/offset
@@ -640,6 +646,23 @@ function finSig(r) {
   const r1 = (v) => Math.round(v * 10) / 10;   // 0.1 mm
   return `${r.kind ?? 'prop'}:${r1(mid[0])},${r1(mid[1])},${r1(mid[2])}`
        + `:${r1(r.height ?? 0)}:${r1(Math.atan2(b[1] - a[1], b[0] - a[0]))}`;
+}
+
+/** Assign each record a UNIQUE sig. finSig is content-derived, so two fins on a
+ *  symmetric/mirrored part can hash identically; a bare collision would make one
+ *  removal click drop both and leave neither individually restorable. Disambiguate
+ *  colliding sigs with an occurrence suffix -- deterministic build order keeps it
+ *  stable within an orientation, and the first occurrence keeps the bare sig. */
+function assignSigs(records) {
+  const seen = new Map();
+  for (const r of records) {
+    const base = finSig(r);
+    if (base == null) { r.sig = null; continue; }
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    r.sig = n === 0 ? base : `${base}#${n}`;
+  }
+  return records;
 }
 
 /** Flatten the KEPT fin records' triangle segments into one vertex array, tagging
@@ -675,6 +698,7 @@ function rebuildFinMesh() {
   removedIds = new Set(finRecords.filter((r) => removedSigs.has(r.sig)).map((r) => r.id));
   for (const m of [finMesh, hoverFinMesh]) if (m) { scene.remove(m); m.geometry.dispose(); }
   finMesh = hoverFinMesh = null;
+  hoverFinId = null;   // ids may shift after a rebuild; force the next hover to redraw
   const { tris, map } = filteredTriangles(lastBuilt.triangles, finRecords, removedIds);
   finTris = tris;
   triToFin = map;
@@ -705,12 +729,19 @@ function syncRemoveUI() {
   el('remove-fins-toggle').hidden = !show;
   el('remove-fins-toggle').classList.toggle('primary', removeMode);
   el('remove-fins-toggle').textContent = removeMode ? 'Click a fin — Esc done' : 'Remove fins';
-  el('restore-fins').hidden = !(show && removedSigs.size > 0);
+  // Gate on removedIds (fins removed in THIS orientation), not the global
+  // removedSigs -- otherwise a removal made in another pose shows a Restore button
+  // that maps to nothing here (and whose tooltip promises "this orientation").
+  el('restore-fins').hidden = !(show && removedIds.size > 0);
 }
 
 /** Arm click-to-remove. Cancels hand-placement (the two pointer modes are exclusive). */
 function beginRemove() {
-  if (!part || !finMesh) return;
+  // Only `part` is required -- finMesh is null once every fin is removed, and
+  // gating on it there would leave the armed button dead (hover/pick already
+  // null-guard finMesh, so remove mode is simply a harmless no-op until a rebuild
+  // repopulates fins).
+  if (!part) return;
   if (drawAugment) { drawAugment = false; syncAugmentUI(); syncDrawControls(); }
   removeMode = true;
   clearPreview();
@@ -722,6 +753,7 @@ function beginRemove() {
 function cancelRemove() {
   removeMode = false;
   if (hoverFinMesh) { scene.remove(hoverFinMesh); hoverFinMesh.geometry.dispose(); hoverFinMesh = null; }
+  hoverFinId = null;
   renderer.domElement.style.cursor = '';
   setGizmo();
   syncRemoveUI();
@@ -1288,6 +1320,7 @@ function applyBuilt(built) {
   clearSpinner();
   for (const m of [finMesh, padMesh, hoverFinMesh]) { if (m) { scene.remove(m); m.geometry.dispose(); } }
   finMesh = padMesh = hoverFinMesh = null;
+  hoverFinId = null;
   finTris = padTris = [];
   // Undo the grey markFinsStale applied to the shared materials.
   finMaterial.transparent = padMaterial.transparent = false;
@@ -1306,7 +1339,7 @@ function applyBuilt(built) {
     // Build per-fin records (now carrying triRanges + line) and reconcile the
     // removed set against them, so a removal survives a same-orientation rebuild.
     // The fin mesh is the FILTERED triangle set; exporters read finTris unchanged.
-    finRecords = (built.fins ?? []).map((f) => ({ ...f, sig: finSig(f) }));
+    finRecords = assignSigs((built.fins ?? []).map((f) => ({ ...f })));
     removedIds = new Set(finRecords.filter((r) => removedSigs.has(r.sig)).map((r) => r.id));
     const { tris, map } = filteredTriangles(built.triangles, finRecords, removedIds);
     finTris = tris;
@@ -1318,6 +1351,9 @@ function applyBuilt(built) {
   }
   updateReadout(built, performance.now() - finT0);
   updateFit();
+  // Restore-all visibility keys off removedIds (this orientation's removals), which
+  // is only known after the reconcile above -- refresh it once the build lands.
+  syncRemoveUI();
 }
 
 /**
@@ -1707,9 +1743,12 @@ el('remove-fins-toggle').addEventListener('click', () => {
   else beginRemove();
 });
 el('restore-fins').addEventListener('click', () => {
-  if (!removedSigs.size) return;
+  // Restore only THIS orientation's removals: drop the sigs of the fins present
+  // in the current build, leaving removals made in other poses intact (deleting a
+  // missing sig is a harmless no-op).
+  if (!removedIds.size) return;
   histPush();
-  removedSigs = new Set();
+  for (const r of finRecords) removedSigs.delete(r.sig);
   rebuildFinMesh();
   syncRemoveUI();
 });
@@ -1944,11 +1983,18 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     hoverFace.visible = false;
     const rec = pickFin(ev);
     if (rec) {
-      if (hoverFinMesh) { scene.remove(hoverFinMesh); hoverFinMesh.geometry.dispose(); }
-      hoverFinMesh = meshFrom(finTrisForRecord(rec), hoverFinMaterial);
+      // Rebuild the overlay only when the hovered fin actually changes -- pointermove
+      // fires dozens of times a second, and disposing + rebuilding a BufferGeometry
+      // (with computeVertexNormals) for the same fin every time is pure churn.
+      if (rec.id !== hoverFinId) {
+        if (hoverFinMesh) { scene.remove(hoverFinMesh); hoverFinMesh.geometry.dispose(); }
+        hoverFinMesh = meshFrom(finTrisForRecord(rec), hoverFinMaterial);
+        hoverFinId = rec.id;
+      }
       renderer.domElement.style.cursor = 'pointer';
     } else {
       if (hoverFinMesh) { scene.remove(hoverFinMesh); hoverFinMesh.geometry.dispose(); hoverFinMesh = null; }
+      hoverFinId = null;
       renderer.domElement.style.cursor = '';
     }
     return;
@@ -1995,6 +2041,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 renderer.domElement.addEventListener('pointerleave', () => {
   hoverFace.visible = false;
   if (hoverFinMesh) { scene.remove(hoverFinMesh); hoverFinMesh.geometry.dispose(); hoverFinMesh = null; }
+  hoverFinId = null;
 });
 
 renderer.domElement.addEventListener('pointerdown', (e) => {

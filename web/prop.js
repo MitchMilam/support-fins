@@ -2181,9 +2181,10 @@ export function buildProps(topo, result, rot, opts = {}) {
           // the centreline, so a coverage check can ask what this wall reaches
           line: settled.map((p) => [p[0], p[1], p[2] - PROP.gap]),
           id: nextId++, kind: 'prop',
-          // `before` (captured above the weld-retry loop) starts the wall;
-          // emitTines just pushed its tines right after, so wall + tines are one
-          // contiguous segment.
+          // `before` (captured at the start of THIS try, line ~2129) marks where
+          // this wall's triangles begin in `out`; failed weld retries roll back to
+          // it, so on the successful try it points at this wall. emitTines just
+          // pushed its tines right after, so wall + tines are one contiguous segment.
           triRanges: [[before, out.length]],
         });
         placed = true;
