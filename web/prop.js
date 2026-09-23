@@ -36,12 +36,24 @@ export const PROP = {
                     // stays 0.6 (Slant3D's tine width) and the base flange 1mm.
   gap: 0.2,         // breakaway clearance below the part
   tip: 0.6,         // width of the contact tip
-  baseH: 1.0,       // height of the flat base flange (Slant3D's ~1mm disc). The
-                    // foot used to be a CONE that ramped up over `chamfer` mm,
-                    // which reads in a slicer as a golf tee, not the upside-down
-                    // T a breakaway support should be. Now the base is a thin
-                    // flat slab, emitted as its own solid and unioned by the
-                    // slicer, with the wall standing straight up off it.
+  baseH: 0.6,       // height of the flat base flange. The foot used to be a CONE
+                    // that ramped up over `chamfer` mm, which reads in a slicer as
+                    // a golf tee, not the upside-down T a breakaway support should
+                    // be. Now the base is a thin flat slab, emitted as its own
+                    // solid and unioned by the slicer, with the wall standing
+                    // straight up off it.
+                    //
+                    // WAS 1.0 (Slant3D's ~1mm disc). Lowered to 0.6 because the
+                    // flange height sets how high off the plate the TINE grip can
+                    // start: `emitTines` skips any station whose wall top sits
+                    // below the flange (minTop = baseH + 0.2), so a 1mm flange left
+                    // the bottom ~2mm of a tilted part ungripped -- exactly where
+                    // the part is least stable and peels. The flange is only an
+                    // anti-wobble brace (a long wall gets its bed grip from its
+                    // LENGTH, and a tilted part from the bed pad), so 0.6mm -- still
+                    // three layers -- braces fine while letting the tine comb reach
+                    // ~0.4mm lower down the face. Grip, not adhesion, is what the
+                    // bottom band needs.
   tipH: 1.5,        // height the tip taper runs
   // Foot half-width. Kept well under maxUnsupportedSpan/2 on purpose: props are
   // laid in ROWS spaced maxUnsupportedSpan apart, so a foot wider than half that
@@ -57,7 +69,7 @@ export const PROP = {
   minSpan: 7.0,     // a wall shorter than this is not worth the plate space
   minHeight: 1.5,   // nor is one this short
   // SQUAT BED SUPPORT. A flanged T-wall needs ~minHeight of headroom just to
-  // exist (gap 0.2 + baseH 1.0 + a sliver of tip taper), so a bed overhang lower
+  // exist (gap 0.2 + baseH 0.6 + a sliver of tip taper), so a bed overhang lower
   // than that gets NOTHING from the wall path -- its stations are trimmed as
   // stub/blocked and the low ledge prints into air (the near-bed overhangs that
   // came out rough on real organic parts). Below minHeight but above this floor a
@@ -183,6 +195,10 @@ export const PROP = {
   // stay dense end-to-end and the minGripTines floor is untouched.
   tineEdgeBand: 8.0,   // mm of dense comb held at each end of the run
   tineMidFactor: 2.0,  // interior spacing = requested step * this (2mm dense -> 4mm)
+  tineSlopeMin: 1.0,   // mm of rise end-to-end before a tail-less line counts as
+                       // running down to a bottom edge (anchored comb) vs level
+  tineTopClear: 0.5,   // mm kept bare at a wall's TOP end, where the overhang face
+                       // ends -- a nub jammed against it hangs past the part's edge
 };
 
 /**
@@ -1177,13 +1193,92 @@ function ribbon(secs, out) {
 }
 
 /**
+ * The stations a plate wall may occupy: the longest run of TALL stations
+ * (`tall[k]`, >= minHeight) extended at each end through the contiguous LOW ones
+ * (`low[k]`, >= minHeightSquat) -- the wall's tail running on down the slope.
+ *
+ * Why: stations are 1mm apart and the wall used to begin at the first one tall
+ * enough for a full T, so where an overhang slopes INTO the bed the wall stopped
+ * ~2mm of height (~3mm of slope on a 35deg cube) short of the part's bottom edge.
+ * The squat pass never caught that band either -- on a slope it is one station
+ * long, under its minStations/minSpanSquat -- so it printed into air. A tail is
+ * the same wall continuing down, not a separate prop, so it needs no span of its
+ * own. A run with no tall station is never a wall (that band is the squat pass's).
+ */
+export function withLowTails(tall, low) {
+  const run = longestRun(tall);
+  const mask = tall.map(() => false);
+  if (!run) return mask;
+  let a = run[0], b = run[1];
+  while (a > 0 && low[a - 1]) a--;
+  while (b < low.length && low[b]) b++;
+  for (let k = a; k < b; k++) mask[k] = true;
+  return mask;
+}
+
+/**
+ * Which stations of a run are its full-height BODY (top >= minHeight), as a mask.
+ * Taken BEFORE settleTop: settling legitimately lowers the station next to a new
+ * low tail by a hair, and re-reading heights afterwards demoted a 1.51mm body end
+ * to "tail" -- the body then measured under minSpan and the whole wall was
+ * dropped as a stub (sphere, X45Y30). Body membership is decided once.
+ */
+function bodyMask(pts) {
+  return pts.map((p) => p[2] - PROP.gap >= PROP.minHeight);
+}
+
+/** [first, last] body station of `mask`, or null when the body is < 2 stations. */
+function tallBody(mask) {
+  const a = mask.indexOf(true), b = mask.lastIndexOf(true);
+  return a < 0 || b <= a ? null : [a, b];
+}
+
+/**
+ * XY span of a run's BODY, first to last body station. The minSpan gate measures
+ * this, not the whole run: a low tail extends a wall that already earned its
+ * place, it must not promote a stub into one.
+ */
+function tallSpan(pts, mask) {
+  const r = tallBody(mask);
+  return r ? Math.hypot(pts[r[1]][0] - pts[r[0]][0], pts[r[1]][1] - pts[r[0]][1]) : 0;
+}
+
+/**
+ * Where a line's END dips under the squat floor, insert one station exactly AT
+ * the floor (top = minHeightSquat), linearly between the first station above it
+ * and the last below (an edge row's track can run past the knife edge, so
+ * several end stations may sit under the floor). Stations are 1mm apart, so without this the wall's low end
+ * snaps to whichever station happens to clear the floor -- up to a full step
+ * (0.7mm of height on a 35deg face) higher than it has to. Mutates `line`.
+ */
+export function insertFloorStations(line) {
+  const floorZ = PROP.minHeightSquat + PROP.gap + 0.02;   // a hair over, so float noise can't drop it
+  const cross = (i, j) => {                       // i below the floor, j above
+    const zi = line[i][2], zj = line[j][2];
+    if (!(zi < floorZ && zj > floorZ + 1e-3)) return null;
+    const t = (floorZ - zi) / (zj - zi);
+    return line[i].map((v, c) => v + (line[j][c] - v) * t);
+  };
+  // walk in from each end past every sub-floor station to the first crossing
+  let j = line.length - 1;
+  while (j > 0 && line[j][2] < floorZ) j--;
+  const hiEnd = j < line.length - 1 ? cross(j + 1, j) : null;
+  if (hiEnd) line.splice(j + 1, 0, hiEnd);
+  let i = 0;
+  while (i < line.length - 1 && line[i][2] < floorZ) i++;
+  const loEnd = i > 0 ? cross(i - 1, i) : null;
+  if (loEnd) line.splice(i, 0, loEnd);
+  return line;
+}
+
+/**
  * Sweep the prop along `line`, emitting an upside-down T: a straight thin wall
  * standing on a flat base flange. They are TWO overlapping closed solids, not
  * one -- the slicer unions them, the same overlap approach the rest of the repo
  * uses -- which keeps each section convex and sidesteps capping a T's concave
  * outline. Replaces the single cone-footed solid that read as a golf tee.
  */
-export function sweep(line, zBed, out) {
+export function sweep(line, zBed, out, minH = PROP.minHeight) {
   const wall = [], flange = [];
   for (let i = 0; i < line.length; i++) {
     const p = line[i];
@@ -1197,10 +1292,13 @@ export function sweep(line, zBed, out) {
 
     const top = p[2] - PROP.gap;
     const h = top - zBed;
-    if (h < PROP.minHeight) return false;
+    if (h < minH) return false;
     const foot = footFor(h);
-    const ztip = Math.max(top - PROP.tipH, zBed + PROP.baseH + 0.1);
-    const baseTop = zBed + PROP.baseH;
+    // A low TAIL station (see withLowTails) has less headroom than the flange +
+    // tip taper assume, so both shrink with it. Identical to before for h >= 1.2.
+    const flangeH = Math.min(PROP.baseH, h / 2);
+    const ztip = Math.max(top - PROP.tipH, zBed + flangeH + 0.1);
+    const baseTop = zBed + flangeH;
     const P = (o, z) => [p[0] + sx * o, p[1] + sy * o, z];
 
     // the stem: a straight thin wall from the bed up to the breakaway tip
@@ -1291,26 +1389,39 @@ function ptTriDist2(p, a, b, c) {
  * (near-vertical normal, tiny horizontal component) returns null, the honest "too
  * flat to grip horizontally" case. Returns {x,y} unit horizontal or null.
  */
-function biteDirAt(topo, rot, offset, px, py, pz) {
+function biteDirsAt(topo, rot, offset, px, py, pz) {
   const pos = topo.pos, nrm = topo.nrm, nF = topo.nFaces;
   const P = [px, py, pz];
   const seat = (o) => [rot[0] * pos[o] + rot[3] * pos[o + 1] + rot[6] * pos[o + 2] + offset.x,
                        rot[1] * pos[o] + rot[4] * pos[o + 1] + rot[7] * pos[o + 2] + offset.y,
                        rot[2] * pos[o] + rot[5] * pos[o + 1] + rot[8] * pos[o + 2] + offset.z];
-  let best = Infinity, bf = -1;
+  const d2 = new Float64Array(nF);
+  let best = Infinity;
   for (let f = 0; f < nF; f++) {
     const o = f * 9;
-    const d2 = ptTriDist2(P, seat(o), seat(o + 3), seat(o + 6));
-    if (d2 < best) { best = d2; bf = f; }
+    d2[f] = ptTriDist2(P, seat(o), seat(o + 3), seat(o + 6));
+    if (d2[f] < best) best = d2[f];
   }
-  if (bf < 0) return null;
-  const nx = nrm[bf * 3], ny = nrm[bf * 3 + 1], nz = nrm[bf * 3 + 2];
-  // seated normal, then INWARD (into the part) = negated, horizontal component only
-  const sx = rot[0] * nx + rot[3] * ny + rot[6] * nz;
-  const sy = rot[1] * nx + rot[4] * ny + rot[7] * nz;
-  const hx = -sx, hy = -sy, hm = Math.hypot(hx, hy);
-  if (hm < 0.34) return null;               // face too flat (near-horizontal ceiling) to grip sideways
-  return { x: hx / hm, y: hy / hm };
+  if (!(best < Infinity)) return [];
+  // TIES. At an inside corner two faces can be EXACTLY equidistant (a step's
+  // underside and the part's side face, 6.7100e-3 both), and which one a strict
+  // `<` kept was decided by 1e-15 of float noise -- so an unrelated change that
+  // nudged a station by that much flipped tines between biting and missing.
+  // Return every tied face (nearest first by index, as before) and let the caller
+  // take the first whose bite lands in the part.
+  const tol = best * 1e-9 + 1e-12;
+  const dirs = [];
+  for (let f = 0; f < nF; f++) {
+    if (d2[f] > best + tol) continue;
+    const nx = nrm[f * 3], ny = nrm[f * 3 + 1], nz = nrm[f * 3 + 2];
+    // seated normal, then INWARD (into the part) = negated, horizontal component only
+    const sx = rot[0] * nx + rot[3] * ny + rot[6] * nz;
+    const sy = rot[1] * nx + rot[4] * ny + rot[7] * nz;
+    const hx = -sx, hy = -sy, hm = Math.hypot(hx, hy);
+    if (hm < 0.34) continue;                  // face too flat (near-horizontal ceiling) to grip sideways
+    dirs.push({ x: hx / hm, y: hy / hm });
+  }
+  return dirs;
 }
 
 /**
@@ -1325,7 +1436,7 @@ export function tineStepFor(density) {
 }
 
 export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tineStep,
-                          minTop = PROP.baseH + 0.2, tineH = PROP.tineH) {
+                          minTop = PROP.baseH + 0.2, tineH = PROP.tineH, body = null) {
   if (line.length < 2) return 0;
 
   // arc length along the run, to space nubs by a real distance not a station count
@@ -1334,7 +1445,16 @@ export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tin
     s.push(s[i - 1] + Math.hypot(line[i][0] - line[i - 1][0],
                                  line[i][1] - line[i - 1][1]));
   }
-  const total = s[s.length - 1];
+  // `body` = [i0, i1], the station range of a tall wall's full-height BODY (the
+  // rest is its low TAILS, withLowTails). It only sizes the spacing below: the
+  // minGripTines floor counts the body, as before walls grew tails, so a tail
+  // never thins the comb. The comb itself runs the whole wall, anchored at the
+  // lowest point a nub grips (see the end), so rows never land where a tail
+  // can't take one. Callers without a tail pass nothing.
+  const s0 = body ? s[body[0]] : 0;
+  const s1 = body ? s[body[1]] : s[s.length - 1];
+  const total = s1 - s0;
+  if (!(total > 0)) return 0;
 
   // The caller's step encodes tip-over risk (sparse for a stable part). But grip
   // is a floor no part goes under: a wall gets at least minGripTines along its
@@ -1348,26 +1468,11 @@ export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tin
   // wall thickness. Building it th-wide made a 1mm divot, ~2x Slant3D's spec.
   const half = PROP.tineW / 2;
 
-  // EDGE-BIASED stations: dense (`step`) within tineEdgeBand of either end, thinned
-  // (`step * tineMidFactor`) across the middle, so the comb clusters at the run's
-  // ends/corners and stops marching across a visible flat face (PROP.tineEdgeBand).
-  // The step chosen for the NEXT gap depends on where we are now: still dense while
-  // the current station sits in either end band. A run <= 2*band is all-edge.
-  const band = Math.min(PROP.tineEdgeBand, total / 2);
-  // The interior step thins by tineMidFactor but never past the slider's OWN
-  // sparsest setting: edge-bias must not compound with a user who already dialed
-  // grip to light and starve the comb to a few scattered nubs. So when the
-  // requested step is already sparse, edge-bias adds no further thinning.
-  const midStep = Math.min(step * PROP.tineMidFactor, PROP.tineStepSparse);
-  const stations = [];
-  for (let d = step / 2; d < total; ) {
-    stations.push(d);
-    const inEndBand = Math.min(d, total - d) <= band;
-    d += inEndBand ? step : midStep;
-  }
-
   let count = 0;
-  for (const d of stations) {
+  // Place ONE tine at arc length d0 (relative to the body start s0); true if it
+  // landed. Everything below is per-station and unchanged.
+  const place = (d0) => {
+    const d = d0 + s0;                          // back onto the full run's arc length
     // interpolate the station at arc length d
     let k = 0;
     while (k < s.length - 1 && s[k + 1] < d) k++;
@@ -1377,7 +1482,7 @@ export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tin
     const y = line[k][1] + (line[k + 1][1] - line[k][1]) * f;
     const z = line[k][2] + (line[k + 1][2] - line[k][2]) * f;   // surface z
     const wallTop = z - PROP.gap;
-    if (wallTop < minTop) continue;   // below the wall's base (flange or brim): no
+    if (wallTop < minTop) return false;   // below the wall's base (flange or brim): no
                                       // face to attach a tine to. minTop defaults to
                                       // the flanged base; a squat wall passes its brim.
 
@@ -1413,10 +1518,10 @@ export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tin
     // whose level contour the wall follows -- the regression. Then require the
     // nub's full reach to actually land inside the part, or skip it (honest -- no
     // tine gripping air, no tine on a ceiling too shallow to grab sideways).
-    const bd = biteDirAt(topo, rot, offset, x, y, zMid);
-    if (!bd) continue;
+    const bd = biteDirsAt(topo, rot, offset, x, y, zMid).find((c) =>
+      insidePart(topo, rot, offset, x + c.x * PROP.tineBite, y + c.y * PROP.tineBite, zMid));
+    if (!bd) return false;
     const dirx = bd.x, diry = bd.y;
-    if (!insidePart(topo, rot, offset, x + dirx * PROP.tineBite, y + diry * PROP.tineBite, zMid)) continue;
 
     // frame (along = bite dir, across = z x along, up = z) is right-handed
     const ax = -diry, ay = dirx;                                // across = z x along
@@ -1434,6 +1539,64 @@ export function emitTines(line, tris, topo, rot, offset, out, stepArg = PROP.tin
     // through the whole pipeline. Undefined in the browser -> a zero-cost noop.
     if (globalThis.__TINECAP) globalThis.__TINECAP.push({ x, y, z: zMid, biteX: dirx, biteY: diry });
     count++;
+    return true;
+  };
+  // ONE COMB, LAID UP FROM THE BOTTOM. The wall's LOW end is the part's bottom
+  // edge, where a tilted part peels off first (Slant3D's "dense low"), so the comb
+  // is anchored there: scan up from the low end a tine-width at a time for the
+  // lowest point a nub actually grips (the last stretch is often under minTop, or
+  // curls away on a curved part), then step up the WHOLE run (tail + body) at the
+  // regular spacing from that anchor. An earlier version stacked three passes --
+  // the body comb from half a step in, a forced nub against EACH end, and a tail
+  // pass below the body -- which bunched the bottom tines at uneven gaps (35deg
+  // cube: 0.8/2.1/2.8 then 2mm) and jammed a nub 0.5mm from the TOP end, where the
+  // overhang face ends and it hung past the part's edge. So: no nub within
+  // tineTopClear of the top end. That margin is fixed, not half a step, so a sparse
+  // comb doesn't lose its last nub to a 2.5mm dead zone. The anchor scan runs as far
+  // up as it must: capping it and falling back to an arbitrary phase let the whole
+  // comb straddle a narrow grippable stretch and miss it entirely.
+  //
+  // EDGE-BIASED spacing: dense (`step`) within tineEdgeBand of either end, thinned
+  // (`step * tineMidFactor`) across the middle, so the comb clusters at the run's
+  // ends/corners and stops marching across a visible flat face (PROP.tineEdgeBand).
+  // The step chosen for the NEXT gap depends on where we are now: still dense while
+  // the current station sits in either end band. A run <= 2*band is all-edge.
+  // The interior step thins by tineMidFactor but never past the slider's OWN
+  // sparsest setting: edge-bias must not compound with a user who already dialed
+  // grip to light and starve the comb to a few scattered nubs.
+  const S = s[s.length - 1];
+  const lowFirst = line[0][2] <= line[line.length - 1][2];
+  const at = (u) => place((lowFirst ? u : S - u) - s0);   // u = arc length from the LOW end
+  const band = Math.min(PROP.tineEdgeBand, S / 2);
+  const midStep = Math.min(step * PROP.tineMidFactor, PROP.tineStepSparse);
+  const uTop = S - Math.min(step / 2, PROP.tineTopClear);
+  const zLo = Math.min(line[0][2], line[line.length - 1][2]);
+  const zHi = Math.max(line[0][2], line[line.length - 1][2]);
+  if (!body && zHi - zLo < PROP.tineSlopeMin) {
+    // A LEVEL line with no tail (most wedges, squat walls): main's plain comb,
+    // unchanged -- it was already even, and a level line has no bottom edge to
+    // anchor. Re-phasing these moved nubs off the few grippable spots (dense
+    // wedges lost 10-20% of their tines). A SLOPED line, tail or not, runs down to
+    // the part's bottom edge and takes the bottom-anchored comb below.
+    for (let d = step / 2; d < S; ) {
+      place(d);
+      d += Math.min(d, S - d) <= band ? step : midStep;
+    }
+    return count;
+  }
+  // Start and scan scale down with the step on a very short run (a near-vertical
+  // wedge line can be 0.1mm long in XY, and step shrinks to fit minGripTines there).
+  const scan = Math.min(PROP.tineW, step / 2);
+  let u = Math.min(half, step / 2);
+  while (u <= uTop && !at(u)) u += scan;
+  // Dense while this nub OR the next sparse one sits in an end band: anchoring
+  // the comb lower shifts where it crosses into the top band, and judging only the
+  // current nub let one 4mm gap straddle the band edge and cost the top a nub.
+  for (;;) {
+    const dense = Math.min(u, S - u) <= band || S - (u + midStep) <= band;
+    u += dense ? step : midStep;
+    if (u > uTop) break;
+    at(u);
   }
   return count;
 }
@@ -1757,14 +1920,19 @@ export function sweepSquat(line, zBed, out) {
  * Operates on a private deep copy of the line so `settleTop` never mutates the
  * points the caller's tall path still reads. Appends triangles to `out` and
  * returns the placed prop descriptors (marked `squat: true`).
+ *
+ * `claimed` (optional, per station) marks stations a tall wall already covers
+ * with its low TAIL (withLowTails); those are skipped so the two never stack.
+ * Only stations the built wall really spans are claimed -- a low band next to a
+ * BLOCKED tall station still gets its squat wall.
  */
-export function buildSquatBed(line, regionTris, topo, rot, offset, out) {
+export function buildSquatBed(line, regionTris, topo, rot, offset, out, claimed = null) {
   const zBed = 0;
   const placed = [];
   const heightOf = (p) => (p[2] - PROP.gap) - zBed;
   const usable = line.map((p, k) => {
     const h = heightOf(p);
-    return h >= PROP.minHeightSquat && h < PROP.minHeight
+    return h >= PROP.minHeightSquat && h < PROP.minHeight && !(claimed && claimed[k])
         && stationIsClear(line, k, topo, rot, offset);
   });
 
@@ -2055,45 +2223,53 @@ export function buildProps(topo, result, rot, opts = {}) {
       // geometry they could not see (gap 0.003mm, flank 0.011mm, hub_corner).
       contourTop(line, regionTris);
       lowerSag(line, regionTris);
+      // pin the wall's low end to the squat floor, not the nearest 1mm station
+      if (insertFloorStations(line).length) contourTop(line, regionTris);
 
       // SQUAT BED PASS: hold the near-bed stations too low for the flanged wall
-      // below (which discards everything under minHeight as stub/blocked). Runs on
-      // this same contoured line but on the DISJOINT sub-minHeight stations, so it
-      // never competes with the tall run; its own deep copy keeps settleTop off the
-      // points the tall path still reads.
-      for (const sq of buildSquatBed(line, regionTris, topo, rot, off, out)) {
-        // a squat wall's base is the thin brim, not the tall flange, so tines
-        // attach from squatBrimH up (the default minTop would skip every one).
-        const t0 = out.length;
-        if (withTines) tineTotal += emitTines(
-          sq.line.map((p) => [p[0], p[1], p[2] + PROP.gap]),
-          regionTris, topo, rot, off, out, tineStepEff, PROP.squatBrimH, tineHeight);
-        servedRegions.add(patch.region);
-        // buildSquatBed pushed this wall (sq.triRange) BEFORE every squat wall's
-        // tines, so a fin's wall and its tines are NON-contiguous in `out` --
-        // track both segments so removing the fin takes wall AND tines together.
-        const segs = [sq.triRange];
-        if (out.length > t0) segs.push([t0, out.length]);
-        props.push({ ...sq, area: patch.area, id: nextId++, kind: 'prop', triRanges: segs });
-      }
+      // below (which discards everything under minHeight as stub/blocked). It runs
+      // AFTER the tall wall (runSquat, on every exit path) so it can skip exactly
+      // the stations that wall's low tail covered (`claimed`) and nothing more.
+      // squatLine is a deep copy taken now, before the tall path's settleTop
+      // mutates the shared points, so the squat pass sees the contoured line.
+      const squatLine = line.map((p) => [p[0], p[1], p[2]]);
+      const claimed = line.map(() => false);
+      const runSquat = () => {
+        for (const sq of buildSquatBed(squatLine, regionTris, topo, rot, off, out, claimed)) {
+          // a squat wall's base is the thin brim, not the tall flange, so tines
+          // attach from squatBrimH up (the default minTop would skip every one).
+          const t0 = out.length;
+          if (withTines) tineTotal += emitTines(
+            sq.line.map((p) => [p[0], p[1], p[2] + PROP.gap]),
+            regionTris, topo, rot, off, out, tineStepEff, PROP.squatBrimH, tineHeight);
+          servedRegions.add(patch.region);
+          // buildSquatBed pushed this wall (sq.triRange) BEFORE every squat wall's
+          // tines, so a fin's wall and its tines are NON-contiguous in `out` --
+          // track both segments so removing the fin takes wall AND tines together.
+          const segs = [sq.triRange];
+          if (out.length > t0) segs.push([t0, out.length]);
+          props.push({ ...sq, area: patch.area, id: nextId++, kind: 'prop', triRanges: segs });
+        }
+      };
 
       // A track is straight in XY by construction, so this gate is a tripwire
       // rather than the bowl-refusal it was for bucketed polylines -- bowls are
       // now refused by their holes (see patchTracks). Keep it: anything that
       // trips it means the frame fit itself went wrong.
-      if (straightness(line) > PROP.maxWander) { skipped.wanders++; continue; }
+      if (straightness(line) > PROP.maxWander) { skipped.wanders++; runSquat(); continue; }
 
       // Trim to the longest run that can actually carry a wall, rather than
       // discarding the track over a local problem. See `longestRun`.
-      const usable = line.map((p, k) =>
-        p[2] - PROP.gap >= PROP.minHeight && stationIsClear(line, k, topo, rot, off));
+      const clear = line.map((p, k) =>
+        p[2] - PROP.gap >= PROP.minHeightSquat && stationIsClear(line, k, topo, rot, off));
+      const usable = withLowTails(
+        line.map((p, k) => clear[k] && p[2] - PROP.gap >= PROP.minHeight), clear);
       const run = longestRun(usable);
-      if (!run || run[1] - run[0] < PROP.minStations) { skipped.blocked++; continue; }
+      if (!run || run[1] - run[0] < PROP.minStations) { skipped.blocked++; runSquat(); continue; }
       const sub = line.slice(run[0], run[1]);
 
-      const span = Math.hypot(sub[sub.length - 1][0] - sub[0][0],
-                              sub[sub.length - 1][1] - sub[0][1]);
-      if (span < PROP.minSpan) { skipped.stub++; continue; }
+      const body = bodyMask(sub);               // before settleTop -- see bodyMask
+      if (tallSpan(sub, body) < PROP.minSpan) { skipped.stub++; runSquat(); continue; }
 
       // Last, on the trimmed run only: put the closest approach exactly on spec.
       // It runs here rather than earlier because trimming changes which part of
@@ -2106,8 +2282,10 @@ export function buildProps(topo, result, rot, opts = {}) {
       // all-or-nothing failure the trim exists to prevent, reintroduced one step
       // later. Re-trim against the settled line: on height, and on the measured
       // clearance to everything settleTop could not see (stationCertified).
-      const avail = sub.map((p, k) =>
-        p[2] - PROP.gap >= PROP.minHeight && stationCertified(sub, k, topo, rot, off));
+      // Tall stations carry the wall; low ones may only extend it as its tail.
+      const lowA = sub.map((p, k) =>
+        p[2] - PROP.gap >= PROP.minHeightSquat && stationCertified(sub, k, topo, rot, off));
+      const tallA = sub.map((p, k) => lowA[k] && p[2] - PROP.gap >= PROP.minHeight);
 
       // Sweep, then MEASURE the finished solid -- exact triangle-to-triangle
       // clearance against the whole part (solidClearance), because the last
@@ -2119,15 +2297,16 @@ export function buildProps(topo, result, rot, opts = {}) {
       // prop is a ruined print.
       let placed = false, reason = null;
       for (let tries = 0; tries < 4 && !placed; tries++) {
-        const run2 = longestRun(avail);
+        const run2 = longestRun(withLowTails(tallA, lowA));
         if (!run2 || run2[1] - run2[0] < PROP.minStations) { reason = 'blocked'; break; }
         const settled = sub.slice(run2[0], run2[1]);
         const span2 = Math.hypot(settled[settled.length - 1][0] - settled[0][0],
                                  settled[settled.length - 1][1] - settled[0][1]);
-        if (span2 < PROP.minSpan) { reason = 'stub'; break; }
+        const settledBody = body.slice(run2[0], run2[1]);
+        if (tallSpan(settled, settledBody) < PROP.minSpan) { reason = 'stub'; break; }
 
         const before = out.length;
-        if (!sweep(settled, zBed, out)) {
+        if (!sweep(settled, zBed, out, PROP.minHeightSquat)) {
           out.length = before;
           reason = 'degenerate';
           break;
@@ -2149,9 +2328,10 @@ export function buildProps(topo, result, rot, opts = {}) {
             if (dx * dx + dy * dy < dBest) { dBest = dx * dx + dy * dy; kBest = k; }
           }
           const at = run2[0] + kBest;
-          avail[Math.max(0, at - 1)] = false;
-          avail[at] = false;
-          avail[Math.min(avail.length - 1, at + 1)] = false;
+          for (const k of [Math.max(0, at - 1), at, Math.min(lowA.length - 1, at + 1)]) {
+            lowA[k] = false;
+            tallA[k] = false;
+          }
           reason = 'weld';
           continue;
         }
@@ -2173,7 +2353,8 @@ export function buildProps(topo, result, rot, opts = {}) {
         servedRegions.add(patch.region);
         // The grip comb: nubs along this wall's settled top that bite into the
         // part. `settled` carries the surface z; emitTines subtracts the gap.
-        if (withTines) tineTotal += emitTines(settled, regionTris, topo, rot, off, out, tineStepEff, undefined, tineHeight);
+        if (withTines) tineTotal += emitTines(settled, regionTris, topo, rot, off, out, tineStepEff, undefined, tineHeight,
+                                              tallBody(settledBody));
         props.push({
           span: span2, height: top - zBed, area: patch.area,
           stations: settled.length, trimmed: line.length - settled.length,
@@ -2187,9 +2368,11 @@ export function buildProps(topo, result, rot, opts = {}) {
           // pushed its tines right after, so wall + tines are one contiguous segment.
           triRanges: [[before, out.length]],
         });
+        for (let k = run[0] + run2[0]; k < run[0] + run2[1]; k++) claimed[k] = true;
         placed = true;
       }
       if (!placed && reason) skipped[reason]++;
+      runSquat();
     }
   }
 
