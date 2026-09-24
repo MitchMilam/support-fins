@@ -30,6 +30,7 @@ import { findWallPatches, patchProbe, patchPoint, tAtZ, zAt } from './planes.js'
 import { BED_EPS } from './overhangs.js';
 import { insidePart } from './inside.js';
 import { buildProps, noProps, surfaceZAt, emitTines, tineStepFor, PROP } from './prop.js';
+import { buildSwayBraces } from './sway.js';
 import { CUT, CUTOUT_PATTERNS } from './cutout.js';
 
 export const FIN = {
@@ -1309,6 +1310,43 @@ function unservedAfterWedges(topo, rot, result, servedRegions, wedgeTris) {
  */
 export function buildFins(topo, result, rot, opts = {}) {
   applyTunables(opts.tunables);
+  const built = buildFinsCore(topo, result, rot, opts);
+  // Sway braces are an optional ADD-ON to whatever the mode placed (sway.js): a
+  // tall part still needs its overhangs held, and bracing its sides is a
+  // separate job on separate faces.
+  if (!opts.sway?.on) return built;
+  // Braces run LAST, so everything this mode placed is already on the plate: hand
+  // the props' and wedges' centrelines over as things to stand clear of. Fused to
+  // one of those, a brace is no longer a piece that snaps off by itself.
+  const walls = (built.fins ?? []).map((f) => f.line).filter((l) => Array.isArray(l) && l.length);
+  const sw = buildSwayBraces(topo, result, rot,
+    { ...opts.sway, tines: opts.tines, layerHeight: opts.layerHeight, avoid: { walls } });
+  // Each brace also gets a fin record: the Auto view draws and exports only the
+  // triangles some record claims (per-fin removal), so an unrecorded brace would
+  // be counted in the readout but never shown or written out.
+  const base = built.triangles.length;
+  const fins = built.fins ?? [];
+  let id = fins.reduce((m, f) => Math.max(m, (f.id ?? -1) + 1), fins.length);
+  const braces = sw.ribs.map((r) => ({
+    height: r.height, length: r.depth, tines: r.tines, rows: 0, stilt: 0, lean: 0, bearing: 0, site: null,
+    id: id++, kind: 'sway',
+    triRanges: [[r.triRange[0] + base, r.triRange[1] + base]],
+    line: r.foot, span: r.depth,
+  }));
+  return {
+    ...built,
+    triangles: [...built.triangles, ...sw.triangles],
+    fins: [...fins, ...braces],
+    sway: { count: sw.count, tines: sw.tines, skipped: sw.skipped, reason: sw.reason,
+            // The outlines travel back so a brace the user then clicks by hand can be
+            // checked against these: Auto builds in the Worker, so the page has no
+            // other way to know where they stand. Plain data, structured-cloneable.
+            braces: (sw.ribs ?? []).map((r) => ({ foot: r.foot, halfW: r.halfW, th: r.th,
+                                          height: r.height, levels: r.levels })) },
+  };
+}
+
+function buildFinsCore(topo, result, rot, opts = {}) {
   const mode = opts.mode ?? 'prop';
   const maxFins = opts.maxFins ?? FIN.maxFins;
   const out = [];
@@ -1340,7 +1378,7 @@ export function buildFins(topo, result, rot, opts = {}) {
     // tests/coverage.test.js.
     const coverage = Math.max(0, Math.min(1, opts.coverage ?? FIN.coverDefault));
     const covPitch = coverPitch(coverage);
-    const base = buildFins(topo, result, rot, { ...opts, mode: 'prop', tines: withTines });
+    const base = buildFinsCore(topo, result, rot, { ...opts, mode: 'prop', tines: withTines });
 
     // Add ANGLED WEDGES on grippable down-facing patches that NO prop wall
     // reached -- the wide/long leaning face where a vertical wall is blocked by

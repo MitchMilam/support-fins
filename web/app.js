@@ -17,6 +17,7 @@ import { PROP } from './prop.js';
 import { CUT } from './cutout.js';
 import { findWallPatches } from './planes.js';
 import { drawnWall } from './draw.js';
+import { swayAtFace, faceIsUpright } from './sway.js';
 import { writeBinarySTL, download } from './stl.js';
 import { writeThreeMF, readThreeMF } from './threemf.js';
 
@@ -941,7 +942,7 @@ function clearPreview() {
 function rebuildDrawn() {
   if (drawnMesh) { scene.remove(drawnMesh); drawnMesh.geometry.dispose(); drawnMesh = null; }
   drawnTris = [];
-  if (!drawShown() || !topology || !lastResult) return;
+  if (!drawShown() || !topology || !lastResult) { syncSelection(); return; }
   part.updateMatrixWorld();
 
   // Both Draw and the Suggest "+ Add" augment place the SAME thing now: hand-drawn
@@ -955,15 +956,104 @@ function rebuildDrawn() {
                      layerHeight: el('layer-height').valueAsNumber,
                      topo: topology, rot: rotM3.elements, offset: lastResult.offset };
   const wa = new THREE.Vector3(), wb = new THREE.Vector3();
+  // Everything a hand-placed brace has to keep clear of: Auto's braces and walls
+  // (when Auto's supports are on screen), then each hand-placed brace as it is
+  // re-stood, so a rotation that brings two together is reported rather than fused.
+  const auto = autoSupports();
+  const braces = [...auto.braces];
   for (const w of drawnWalls) {
+    // Each support remembers which triangles of the merged mesh are its own, so a
+    // click on the mesh can be traced back to the support to select / remove.
+    w.triStart = drawnTris.length / 3;
+    if (w.kind === 'sway') {
+      // A hand-placed sway brace: re-stood on the same face at the same spot, so
+      // it follows the part when it turns (and says why if that face no longer
+      // stands upright, or now runs into an earlier brace).
+      part.localToWorld(wa.copy(w.a));
+      const r = swayAtFace(topology, lastResult, rotM3.elements, w.face,
+                           [wa.x, wa.y, wa.z], swayOpts(), { braces, walls: auto.walls });
+      w.ok = r.ok;
+      w.info = r;
+      if (r.ok) { braces.push(r); for (const t of r.tris) drawnTris.push(t); }
+      w.triEnd = drawnTris.length / 3;
+      continue;
+    }
     part.localToWorld(wa.copy(w.a));
     part.localToWorld(wb.copy(w.b));
     const r = drawnWall([wa.x, wa.y, wa.z], [wb.x, wb.y, wb.z], tris, 0, drawOpts);
     w.ok = r.ok;
     w.info = r;
     if (r.ok) for (const t of r.tris) drawnTris.push(t);
+    w.triEnd = drawnTris.length / 3;
   }
   drawnMesh = meshFrom(drawnTris, drawMaterial);
+  syncSelection();
+}
+
+// ---- selecting a hand-placed support, to remove it -------------------------
+// A click on a drawn wall or sway brace selects it (drawn in amber); Delete /
+// Backspace or the "Remove selected" button takes it out, and Undo brings it back.
+// Held as the wall OBJECT, not an index, so an undo/clear that replaces the list
+// simply drops a selection that no longer exists.
+let selectedWall = null;
+let selMesh = null;
+const selMaterial = new THREE.MeshStandardMaterial({
+  color: 0xffb347, roughness: 0.6, metalness: 0.0, side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+});
+
+/** Re-draw the highlight for the current selection, or clear a stale one. */
+function syncSelection() {
+  if (selMesh) { scene.remove(selMesh); selMesh.geometry.dispose(); selMesh = null; }
+  if (selectedWall && (!drawShown() || !drawnWalls.includes(selectedWall) || !selectedWall.ok)) {
+    selectedWall = null;
+  }
+  if (selectedWall) {
+    selMesh = meshFrom(drawnTris.slice(selectedWall.triStart * 3, selectedWall.triEnd * 3), selMaterial);
+  }
+  el('draw-remove').hidden = !selectedWall;
+}
+
+/** The hand-placed support under the pointer, if it is nearer than the part. */
+function pickSupport(ev) {
+  if (!drawnMesh) return null;
+  const r = renderer.domElement.getBoundingClientRect();
+  pointer.set(((ev.clientX - r.left) / r.width) * 2 - 1,
+              -((ev.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObject(drawnMesh, false)[0];
+  if (!hit || hit.faceIndex == null) return null;
+  const onPart = part ? raycaster.intersectObject(part, false)[0] : null;
+  if (onPart && onPart.distance < hit.distance) return null;   // the part is in front
+  return drawnWalls.find((w) => w.ok && hit.faceIndex >= w.triStart && hit.faceIndex < w.triEnd) ?? null;
+}
+
+/** One readout line naming what is selected and how to remove it. */
+function selectedNote() {
+  const i = selectedWall.info ?? {};
+  const what = selectedWall.kind === 'sway'
+    ? `sway brace ${Math.round(i.height ?? 0)}mm tall`
+    : `wall ${Math.round(i.length ?? 0)}mm long`;
+  return `selected: ${what}${i.tines ? `, ${i.tines} tines` : ''}. Press Delete or `
+    + 'Remove selected to take it out (Esc to keep it)';
+}
+
+function selectWall(w) {
+  selectedWall = selectedWall === w ? null : w;   // a second click deselects
+  drawMsg = '';
+  syncSelection();
+  updateReadout(lastBuilt);
+}
+
+function removeSelected() {
+  if (!selectedWall) return;
+  histPush();
+  drawnWalls = drawnWalls.filter((w) => w !== selectedWall);
+  selectedWall = null;
+  drawMsg = '';
+  rebuildDrawn();
+  updateReadout(lastBuilt);
+  updateFit();
 }
 
 /** The walls + pad the CURRENT mode contributes to the export and the fit check. */
@@ -1024,6 +1114,54 @@ function placeSecondPoint(hitPoint) {
   histPush();
   drawnWalls.push({ a: drawStart.clone(), b: part.worldToLocal(bWorld.clone()) });
   clearPreview();
+  rebuildDrawn();
+  updateReadout(lastBuilt);
+  updateFit();
+}
+
+/**
+ * The supports Auto has ALREADY placed, as things a hand-placed brace must avoid.
+ *
+ * Auto builds in the Worker, so the page has no other way to know where its braces
+ * and walls stand: without this, a brace you click can land on top of an Auto one
+ * (or face it across a channel) and the two fuse into one piece that won't break
+ * away. Empty unless Auto's supports are actually on screen, and fins the user has
+ * removed are left out -- they aren't there to hit.
+ */
+function autoSupports() {
+  if (!finsVisible || finMode !== 'auto' || !lastBuilt) return { braces: [], walls: [] };
+  const outlines = lastBuilt.sway?.braces ?? [];
+  const braces = [], walls = [];
+  let k = 0;   // sway records and their outlines are emitted in the same order
+  for (const rec of lastBuilt.fins ?? []) {
+    const gone = removedIds.has(rec.id);
+    if (rec.kind === 'sway') {
+      const outline = outlines[k++];
+      if (outline && !gone) braces.push(outline);
+    } else if (!gone && Array.isArray(rec.line) && rec.line.length) {
+      walls.push(rec.line);
+    }
+  }
+  return { braces, walls };
+}
+
+/** Stand a sway brace on the upright face the user clicked. One click, no second point. */
+function placeSway(hit) {
+  const auto = autoSupports();
+  const standing = [...auto.braces,
+                    ...drawnWalls.filter((w) => w.kind === 'sway' && w.ok).map((w) => w.info)];
+  const r = swayAtFace(topology, lastResult, rotM3.elements, hit.faceIndex,
+                       [hit.point.x, hit.point.y, hit.point.z], swayOpts(),
+                       { braces: standing, walls: auto.walls });
+  if (!r.ok) {
+    drawMsg = `couldn’t place that brace: ${r.reason}`;
+    updateReadout(lastBuilt);
+    return;
+  }
+  drawMsg = '';
+  histPush();
+  part.updateMatrixWorld();
+  drawnWalls.push({ kind: 'sway', face: hit.faceIndex, a: part.worldToLocal(hit.point.clone()) });
   rebuildDrawn();
   updateReadout(lastBuilt);
   updateFit();
@@ -1230,12 +1368,26 @@ function finOpts() {
            tineDensity: el('tine-density').valueAsNumber / 100,
            layerHeight: el('layer-height').valueAsNumber,
            coverage: el('coverage').valueAsNumber / 100,
+           // Auto places sway braces itself; in Draw they are clicked on by hand.
+           sway: finMode === 'auto' && el('sway').checked ? { on: true, ...swayOpts() } : undefined,
            // The clearances have to travel WITH the request: the build runs in a
            // Worker with its own copy of fins.js / prop.js, which never sees what
            // applyMaterial and the gap fields set on this page's copy (fins.js
            // applyTunables). Without this, Auto mode always built PLA's numbers.
            tunables: { finGap: FIN.gap, tineBite: FIN.tineBite, padH: FIN.padH,
                        padGrab: PAD.grab, propGap: PROP.gap, cutout: CUT.pattern } };
+}
+
+/** The Sway braces settings. Gap and bite are passed explicitly -- sway.js takes
+ *  the material's numbers as options instead of reading FIN/PROP itself. */
+function swayOpts() {
+  const num = (id, d) => (Number.isFinite(el(id).valueAsNumber) ? el(id).valueAsNumber : d);
+  return { gripFrom: num('sway-from', 0),
+           tineSpacing: num('sway-spacing', 6),
+           reach: num('sway-depth', 15) / 100,
+           gap: PROP.gap, bite: FIN.tineBite,
+           tines: el('tines').checked,
+           layerHeight: el('layer-height').valueAsNumber };
 }
 
 function makeFinWorker() {
@@ -1462,8 +1614,13 @@ function updateDrawReadout(built, ms) {
   const ok = drawnWalls.filter((w) => w.ok);
   const bad = drawnWalls.length - ok.length;
   const tines = ok.reduce((a, w) => a + (w.info?.tines ?? 0), 0);
+  const braces = ok.filter((w) => w.kind === 'sway').length;
+  const walls = ok.length - braces;
+  const parts = [];
+  if (walls) parts.push(`${walls} drawn wall${walls === 1 ? '' : 's'}`);
+  if (braces) parts.push(`${braces} sway brace${braces === 1 ? '' : 's'}`);
   box.textContent = ok.length
-    ? `${ok.length} drawn wall${ok.length === 1 ? '' : 's'}` + (tines ? ` · ${tines} tines` : '')
+    ? parts.join(' + ') + (tines ? ` · ${tines} tines` : '')
     : 'none yet';
   box.classList.toggle('warn', ok.length === 0);
 
@@ -1479,12 +1636,23 @@ function updateDrawReadout(built, ms) {
       : 'Each wall stops a hair under the part (0.2mm) so it snaps off clean. Turn '
         + 'Tines on if you want it to grip the part.');
   }
+  // A brace you place by hand is built even where Auto would refuse to stand one,
+  // so say what it is doing: below its first tine it holds nothing and nothing
+  // holds it, which is worth knowing but is your call to make.
+  const stilted = ok.filter((w) => w.kind === 'sway' && (w.info?.stilt ?? 0) > 20);
+  if (stilted.length) {
+    const tallest = Math.max(...stilted.map((w) => w.info.stilt));
+    help.push(`${stilted.length === 1 ? 'One brace stands' : `${stilted.length} braces stand`} `
+      + `up to ${Math.round(tallest)}mm before gripping the part — that much of it prints as a `
+      + 'lone wall. Fine if it prints; rotate so that side reaches the plate if it wobbles.');
+  }
   if (bad) {
     const one = drawnWalls.find((w) => !w.ok);
     lead.push(`${bad} wall${bad === 1 ? '' : 's'} couldn’t build here`
       + `${one?.info?.reason ? ` (${one.info.reason})` : ''}. Undo, or redraw`);
   }
   if (drawMsg) lead.push(drawMsg);
+  if (selectedWall) lead.push(selectedNote());
   if (built?.seating?.kind === 'point') {
     lead.push(built.pad
       ? 'this part balances on one point, so the bed pad is holding it. Print with the pad on'
@@ -1529,8 +1697,13 @@ function updateFinReadout(built, ms) {
   const drawnTxt = drawnOk ? `${autoTxt ? ' + ' : ''}${drawnOk} drawn` : '';
   const removedN = removedIds.size;
   const removedTxt = removedN ? ` (${removedN} removed)` : '';
-  box.textContent = (autoTxt + drawnTxt + removedTxt) || 'none possible';
-  box.classList.toggle('warn', n === 0 && !drawnOk);
+  const sw = built.sway;
+  const swayTxt = sw?.count
+    ? `${autoTxt || drawnTxt ? ' + ' : ''}${sw.count} sway brace${sw.count === 1 ? '' : 's'}`
+      + (sw.tines ? ` · ${sw.tines} brace tines` : '')
+    : '';
+  box.textContent = (autoTxt + drawnTxt + swayTxt + removedTxt) || 'none possible';
+  box.classList.toggle('warn', n === 0 && !drawnOk && !sw?.count);
 
   // `lead` = short + must-see, stays in the panel; `help` = how-it-works and
   // how-to-fix, goes behind the (i). Split so the panel doesn't read as a wall.
@@ -1575,6 +1748,7 @@ function updateFinReadout(built, ms) {
               + (one?.info?.reason ? ` (${one.info.reason})` : ''));
     }
     if (drawMsg) lead.push(drawMsg);
+    if (selectedWall) lead.push(selectedNote());
   }
   // Worth saying even when something WAS placed: a point-balanced part is
   // standing on the added pad and nothing else, so the pad is load-bearing,
@@ -1610,6 +1784,18 @@ function updateFinReadout(built, ms) {
             + `${b === 1 ? 'it' : 'them'} alone, so turn the hole upward to print `
             + `${b === 1 ? 'it' : 'them'} clean.`);
   }
+  // Sway braces were asked for, so say what they did -- and why, if nothing.
+  if (sw) {
+    if (!sw.count) lead.push(`no sway braces: ${sw.reason}`);
+    else {
+      help.push('The sway braces stand edge-on against the tall sides and are tied on '
+        + 'by tines all the way up, so the top can’t drift or wobble as it prints.');
+      if (sw.skipped) {
+        help.push(`${sw.skipped} brace spot${sw.skipped === 1 ? ' was' : 's were'} blocked by `
+          + 'the part itself. Switch to Draw and click an upright side to place one by hand.');
+      }
+    }
+  }
   setFinNote(lead, help);
   // ms is absent when a hand-drawn wall (Suggest + Draw mix) re-runs the readout
   // without rebuilding the auto fins -- don't touch the timing line then, and
@@ -1624,6 +1810,9 @@ function syncDrawControls() {
   el('draw-controls').hidden = !drawShown();
   el('draw-hint').innerHTML = 'Click <strong>two points</strong> across an overhang '
     + '— straight onto the red faces — to lay a breakaway wall along that line. '
+    + (el('sway').checked
+      ? 'Click an <strong>upright side</strong> once to stand a sway brace against it. '
+      : '')
     + '<kbd>Esc</kbd> or right-click cancels.';
 }
 
@@ -1673,6 +1862,31 @@ el('tine-density').addEventListener('input', () => debouncedRefresh());
 el('layer-height').addEventListener('input', () => debouncedRefresh());
 el('coverage').addEventListener('input', () => debouncedRefresh());
 syncTineGrip();
+
+// Sway braces: the switch sits in its section header (like Tines), and its three
+// settings only show while it is on, so an unused feature costs one line. The two
+// tine settings additionally follow the global Tines toggle -- with tines off there
+// is no comb to space.
+function syncSway() {
+  const on = el('sway').checked;
+  el('sway-from-fld').hidden = !on || !el('tines').checked;
+  el('sway-spacing-fld').hidden = !on || !el('tines').checked;
+  el('sway-depth-fld').hidden = !on;
+  syncDrawControls();
+  syncSectionSums();
+}
+el('sway').addEventListener('change', () => {
+  // Switching it on opens its section: the switch is in the header, so a collapsed
+  // section would otherwise turn the feature on and hide its settings in one click.
+  if (el('sway').checked) el('sway').closest('details').open = true;
+  syncSway();
+  refreshFins();
+});
+el('tines').addEventListener('change', syncSway);
+for (const id of ['sway-from', 'sway-spacing', 'sway-depth']) {
+  el(id).addEventListener('input', () => debouncedRefresh());
+}
+syncSway();
 
 // Gap tuning. PROP.gap / PAD.grab are read fresh on every build, so setting them
 // here and rebuilding is all it takes. Clamp to the input's own range so a typed
@@ -1765,6 +1979,8 @@ function loadSectionState() {
 // The Tines switch sits inside its section's <summary>; without this a click on it
 // would also fold the section open or shut.
 el('tines').closest('label').addEventListener('click', (e) => e.stopPropagation());
+// ...and the same for the Sway braces switch, which sits in its own section header.
+el('sway').closest('label').addEventListener('click', (e) => e.stopPropagation());
 
 /** Refill each section's collapsed recap from the controls' current values. */
 function syncSectionSums() {
@@ -1778,6 +1994,10 @@ function syncSectionSums() {
     `${el('gap').value} mm gap · pad ${el('bed-pad').checked ? 'on' : 'off'}`;
   const cut = el('cutout').value;
   el('sum-walls').textContent = cut === 'none' ? 'solid' : `${sel('cutout').toLowerCase()} cutouts`;
+  el('sum-sway').textContent = el('sway').checked
+    ? `${el('sway-spacing').value} mm tines · ${el('sway-depth').value}% deep`
+      + (el('sway-from').valueAsNumber > 0 ? ` · from ${el('sway-from').value} mm` : '')
+    : 'off';
 }
 el('fin-opts').addEventListener('input', syncSectionSums);
 el('fin-opts').addEventListener('change', syncSectionSums);
@@ -1917,7 +2137,7 @@ function snapshot() {
   const q = part.quaternion;
   return {
     quat: [q.x, q.y, q.z, q.w],
-    walls: drawnWalls.map((w) => ({ a: w.a.clone(), b: w.b.clone() })),
+    walls: drawnWalls.map((w) => ({ kind: w.kind, face: w.face, a: w.a.clone(), b: w.b?.clone() })),
     load: loadDir ? loadDir.clone() : null,
     finMode, finsVisible, drawAugment,
     removedSigs: [...removedSigs],
@@ -1935,7 +2155,8 @@ function histPush() {
 
 function restoreState(s) {
   part.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
-  drawnWalls = s.walls.map((w) => ({ a: w.a.clone(), b: w.b.clone(), ok: false, info: null }));
+  drawnWalls = s.walls.map((w) => ({ kind: w.kind, face: w.face, a: w.a.clone(), b: w.b?.clone(),
+                                     ok: false, info: null }));
   loadDir = s.load ? s.load.clone() : null;
   removedSigs = new Set(s.removedSigs ?? []);
   removeMode = false;
@@ -1989,6 +2210,11 @@ addEventListener('keydown', (e) => {
   if (!part) return;
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (selectedWall && (e.key === 'Delete' || e.key === 'Backspace')) {
+    e.preventDefault();
+    removeSelected();
+    return;
+  }
   if (!(e.metaKey || e.ctrlKey)) return;
   const k = e.key.toLowerCase();
   if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
@@ -2141,8 +2367,22 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   // second commits it. A breakaway wall sweeps under the line between the two
   // points, so the user draws it straight onto the red overhang -- no face gate.
   if (drawActive()) {
+    // A click on a support you placed selects it (for Delete / Remove selected),
+    // unless a wall is half-drawn -- then the click is its second point.
+    if (!drawStart) {
+      const sup = pickSupport(e);
+      if (sup) { selectWall(sup); return; }
+    }
     const hit = pickFace(e);
     if (!hit) return;
+    if (selectedWall) { selectedWall = null; syncSelection(); }
+    // With Sway braces on, a single click on an UPRIGHT side stands a brace there;
+    // a click on anything else still starts a two-point wall as before.
+    if (!drawStart && el('sway').checked
+        && faceIsUpright(topology, rotM3.elements, hit.faceIndex)) {
+      placeSway(hit);
+      return;
+    }
     if (!drawStart) {
       drawStart = part.worldToLocal(hit.point.clone());
       drawMsg = '';
@@ -2183,8 +2423,11 @@ addEventListener('keydown', (e) => {
   if (drawActive() && drawStart) {
     clearPreview();
     updateReadout(lastBuilt);
+  } else if (selectedWall) {
+    selectWall(selectedWall);        // toggles it off
   }
 });
+el('draw-remove').addEventListener('click', removeSelected);
 renderer.domElement.addEventListener('contextmenu', (e) => {
   if (removeActive()) { e.preventDefault(); cancelRemove(); return; }
   if (layActive()) { e.preventDefault(); cancelLay(); return; }

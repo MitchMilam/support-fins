@@ -98,6 +98,37 @@ welts.
   tined side fins in `fins.js` are never cut -- their tines anchor across the whole
   blade.
 
+## Sway braces (tall parts) — `web/sway.js`
+
+Not from the video; an extension for tall, slender parts that drift, sag or wobble
+as they grow. Nothing overhangs, but the nozzle's drag and each layer shrinking as
+it cools push the top around, and every movement leaves a visible layer line. Off by
+default ("Sway braces (tall parts)" in the options panel).
+
+**Printed, 2026-09-22.** Two prints of the 249 mm fence-post cap in **ASA**, braces
+hand-placed in Draw (three on one, five on the other). Both came out clean: the braces
+**snapped off by hand**, the tines left **small bumps**, and the drift the braces exist
+to stop was gone. So the numbers below are the printed ones — change them only for the
+same kind of reason the rest of this file demands: something measured, not a hunch.
+
+Both prints used the **PLA profile with every setting left at its default** — gap 0.2,
+bite 0.3, tine spacing 6 mm, depth 15%, layer height 0.2 — so the PLA clearances
+release cleanly in ASA too. ASA has no profile of its own yet; two prints isn't enough
+to write one, but it is enough to say the PLA numbers are a safe starting point for it.
+
+| feature | value | rationale |
+|---|---|---|
+| orientation | vertical rib, **edge-on** to an upright face (≤ 30° lean) | a plate lying flat against the face bends the easy way exactly when the part leans into it; edge-on is its stiff direction |
+| inner edge | the breakaway gap (Support gap) off the face | same standoff as every other support |
+| depth | **15%** of rib height at the bed ("Brace depth"), tapering to 4 mm at the top | stiffer than the part at the bottom, where the lever arm is longest; a flat top, never a point |
+| thickness | 1.2 mm + 0.004 mm per mm of height, max 2.4 mm | a 250 mm rib at 1.2 mm is more slender than the part it holds |
+| tines | one layer, one bead wide, **evenly spaced** (default 6 mm, "Brace tine spacing") from "Brace grip from" to the top | the sway is at the top; the Brace's dense-low, 1.6×-spreading rows left the top of a tall part untied |
+| grip floor | ≥ 3 tines and ≥ 30% of the rows must find the face | a tall rib tied on at a few points still lets the part wave about between them |
+| stilt limit (**auto only**) | auto won't stand a rib more than **40 mm**, or more than **40%** of its height, below its first tine, measured from the plate or from "Brace grip from" if that is higher. A brace placed **by hand builds anyway** and the readout says how far it stands before gripping | under its lowest grip a brace holds nothing and nothing holds it: it prints as a lone wall, free to wobble beside a part at its most delicate. So auto avoids it — but the human picks the pose and can see what the software can't, and this is the same suggest-don't-decide split as the rest of the tool |
+| clash | ≥ 1 mm of air from another brace (compared at matching heights) and from any prop wall or wedge (compared at the bed, where both are widest) | two supports fused into one piece no longer break away in pieces |
+| auto placement | up to 4 faces with bearings ≥ 60° apart, a rib per ~100 mm of face width, at the face's **tallest** columns | holds both axes; a rib at a gable's low end braces the half that wasn't moving |
+| manual | Draw mode: one click on an upright side; click a placed support to select it, Delete / "Remove selected" to take it out | |
+
 ## Naming
 
 Slant3D says "grip fins" once. Unrelated to the *grip fin* used elsewhere in Matthew's

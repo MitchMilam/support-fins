@@ -239,6 +239,33 @@
     </label>
   </details>
 
+  <!-- Sway braces (sway.js): for TALL parts that drift, sag or wobble as they grow.
+       A tapered buttress rib stands edge-on to an upright side, tied to it by
+       one-layer tines spaced evenly all the way up. Off by default; in Auto it
+       braces the tallest sides, in Draw you click an upright side to add one.
+       The switch lives in the section header, like Tines, so leaving it off
+       costs one line. -->
+  <details class="sec" data-sec="sway">
+    <summary>
+      <label class="check sec-title" title="Stand tapered buttress ribs against the upright sides of a tall part, tied on with tines all the way up, so it doesn't drift or wobble as it grows. In Draw, click an upright side to add one.">
+        <input type="checkbox" id="sway">Sway braces <span class="mut">tall parts</span>
+      </label>
+      <span class="sec-sum" id="sum-sway"></span>
+    </summary>
+    <label class="fld row" id="sway-from-fld" title="Height the brace tines start at. 0 = grip the whole height; raise it to tie on only above where the part starts to move.">
+      <span>Brace grip from <span class="mut">mm up</span></span>
+      <input type="number" id="sway-from" min="0" max="2000" step="5" value="0">
+    </label>
+    <label class="fld row" id="sway-spacing-fld" title="Vertical distance between brace tines. Smaller = held tighter, more marks on the side. Default 6mm.">
+      <span>Brace tine spacing <span class="mut">mm</span></span>
+      <input type="number" id="sway-spacing" min="2" max="30" step="1" value="6">
+    </label>
+    <label class="fld row" id="sway-depth-fld" title="How far the brace reaches out at the bed, as a share of its height. Deeper = stiffer, more plastic. Default 15%.">
+      <span>Brace depth <span class="mut">% of height</span></span>
+      <input type="number" id="sway-depth" min="5" max="50" step="1" value="15">
+    </label>
+  </details>
+
   <details class="sec" data-sec="walls" open>
     <summary><span class="sec-title">Walls</span><span class="sec-sum" id="sum-walls"></span></summary>
     <!-- Cutouts (issue #34): holes through the middle of each breakaway wall to
@@ -288,6 +315,8 @@
     <p class="draw-hint" id="draw-hint">Click an <strong>overhang face</strong> — it lights
       up green when a fin can go there — to stand a support fin against it.</p>
     <div class="draw-btns">
+      <button class="btn sm" id="draw-remove" hidden
+              title="Remove the support you clicked (Delete or Backspace also works).">Remove selected</button>
       <button class="btn sm" id="draw-undo">Undo</button>
       <button class="btn sm" id="draw-clear">Clear all</button>
     </div>
